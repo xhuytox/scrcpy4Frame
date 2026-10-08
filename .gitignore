@@ -1,0 +1,27 @@
+# Build outputs
+/dist/
+*.flatpak
+.flatpak-builder/
+/build-dir/
+/repo/
+build/
+cmake-build-*/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+._*

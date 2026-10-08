@@ -1,0 +1,19 @@
+# Static libopenvr_api for vr-toast and vr-mirror. Build-time only.
+# No aarch64 patch needed: upstream CMake sets -DLINUXARM64 there, so the loader looks for
+# bin/linuxarm64/vrclient.so. The ~150 MB tarball includes prebuilt binaries and samples.
+name: openvr
+only-arches:
+  - aarch64
+  - x86_64
+buildsystem: cmake-ninja
+builddir: true
+config-opts:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DBUILD_SHARED=OFF
+  - -DUSE_LIBCXX=OFF
+cleanup:
+  - '*'
+sources:
+  - type: archive
+    url: https://github.com/ValveSoftware/openvr/archive/refs/tags/v2.15.6.tar.gz
+    sha256: e184cb625010fab7043a9d5e1e000fdeb3067a152bb3169ef53f64dfac37164c

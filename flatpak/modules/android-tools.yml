@@ -1,0 +1,38 @@
+# adb from nmeum/android-tools (platform-tools 37.0.0). Only the adb target is built.
+# `adb pair` works without Go or Perl because the vendored BoringSSL uses pre-generated sources.
+# android-tools patches out adb's mDNS, so the app discovers phones itself with python-zeroconf.
+# protobuf/abseil lookups are forced to /app (protobuf.yml) since the SDK has its own under /usr.
+name: android-tools
+buildsystem: simple
+modules:
+  # libziparchive's zip_writer.h includes <gtest/gtest_prod.h> and the SDK has no googletest.
+  # That self-contained header is all adb needs. Build-time only.
+  - name: googletest-prod-header
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 googletest/include/gtest/gtest_prod.h ${FLATPAK_DEST}/include/gtest/gtest_prod.h
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/google/googletest/releases/download/v1.18.0/googletest-1.18.0.tar.gz
+        sha256: 6e3191c1455468b3fc35a417fb565c1c5071aee1b7e7f85e30cf48a98d37d8b5
+build-commands:
+  - >-
+    cmake -S . -B _build -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_INSTALL_PREFIX=${FLATPAK_DEST}
+    -DCMAKE_PREFIX_PATH=${FLATPAK_DEST}
+    -DANDROID_TOOLS_PATCH_VENDOR=OFF
+    -DANDROID_TOOLS_USE_BUNDLED_FMT=ON
+    -DANDROID_TOOLS_USE_BUNDLED_LIBUSB=ON
+    -DANDROID_TOOLS_LIBUSB_ENABLE_UDEV=OFF
+    -Dabsl_DIR=${FLATPAK_DEST}/lib/cmake/absl
+    -Dprotobuf_DIR=${FLATPAK_DEST}/lib/cmake/protobuf
+    -DProtobuf_PROTOC_EXECUTABLE=${FLATPAK_DEST}/bin/protoc
+  - cmake --build _build --target adb
+  - install -Dm755 _build/vendor/adb ${FLATPAK_DEST}/bin/adb
+sources:
+  - type: archive
+    url: https://github.com/nmeum/android-tools/releases/download/37.0.0/android-tools-37.0.0.tar.xz
+    sha256: 2725d09f892a3a38e534429f47a321f58ecf6a3169caa42c915fb2cb7d46be0e

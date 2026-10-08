@@ -1,0 +1,27 @@
+[project]
+name = "scrcpy4frame"
+version = "1.0.0"
+description = "Mirror your Android phone on the Steam Frame with scrcpy"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6-Essentials>=6.9",
+    "zeroconf>=0.130",
+    "jeepney>=0.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/xhuytox/scrcpy4Frame"
+Issues = "https://github.com/xhuytox/scrcpy4Frame/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+scrcpy4frame = "scrcpy4frame.__main__:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,51 @@
+# Minimal shared FFmpeg for scrcpy. The runtime's FFmpeg lacks H.264/HEVC decoders (they're in
+# the codecs-extra extension). Mirrors scrcpy v5.0's app/deps/ffmpeg.sh, minus libavdevice and
+# hwaccels since scrcpy.yml disables V4L2 and VA-API.
+# --disable-autodetect keeps SDK libraries out unless enabled below.
+name: ffmpeg
+config-opts:
+  - --disable-static
+  - --enable-shared
+  - --disable-programs
+  - --disable-doc
+  - --disable-autodetect
+  - --enable-pthreads
+  - --enable-zlib
+  - --enable-libdav1d
+  - --disable-everything
+  - --disable-avdevice
+  - --disable-avfilter
+  - --disable-swscale
+  - --disable-network
+  - --enable-swresample
+  # video
+  - --enable-decoder=h264
+  - --enable-decoder=hevc
+  - --enable-decoder=av1
+  - --enable-decoder=libdav1d
+  - --enable-decoder=vp8
+  - --enable-decoder=vp9
+  # audio (pcm_s16le is scrcpy's "raw" audio codec)
+  - --enable-decoder=opus
+  - --enable-decoder=aac
+  - --enable-decoder=flac
+  - --enable-decoder=pcm_s16le
+  # window icon loading (PNG through the image2 demuxer)
+  - --enable-decoder=png
+  - --enable-parser=png
+  - --enable-demuxer=image2
+  - --enable-protocol=file
+  # --record support
+  - --enable-muxer=matroska
+  - --enable-muxer=mp4
+  - --enable-muxer=opus
+  - --enable-muxer=flac
+  - --enable-muxer=wav
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/ffmpeg
+sources:
+  - type: archive
+    url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+    sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e

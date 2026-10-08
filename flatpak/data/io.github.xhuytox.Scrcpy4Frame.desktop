@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=scrcpy4Frame
+GenericName=Android Screen Mirroring
+Comment=Mirror your Android device on the Steam Frame
+Exec=scrcpy4frame
+Icon=io.github.xhuytox.Scrcpy4Frame
+Terminal=false
+StartupNotify=true
+Categories=Utility;
+Keywords=android;phone;tablet;mirror;screen;scrcpy;adb;notifications;vr;

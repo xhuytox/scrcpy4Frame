@@ -1,0 +1,27 @@
+{
+  "controller_type": "frame_controller",
+  "name": "scrcpy4Frame device overlay",
+  "description": "Only active while you move or resize the device overlay: the trigger holds it, the stick pushes it away or pulls it closer.",
+  "bindings": {
+    "/actions/panel": {
+      "sources": [
+        {"path": "/user/hand/left/input/trigger", "mode": "trigger", "inputs": {
+          "click": {"output": "/actions/panel/in/hold"}
+        }},
+        {"path": "/user/hand/right/input/trigger", "mode": "trigger", "inputs": {
+          "click": {"output": "/actions/panel/in/hold"}
+        }},
+        {"path": "/user/hand/left/input/thumbstick", "mode": "joystick", "inputs": {
+          "position": {"output": "/actions/panel/in/depth"}
+        }},
+        {"path": "/user/hand/right/input/thumbstick", "mode": "joystick", "inputs": {
+          "position": {"output": "/actions/panel/in/depth"}
+        }}
+      ],
+      "poses": [
+        {"path": "/user/hand/left/pose/tip", "output": "/actions/panel/in/aim"},
+        {"path": "/user/hand/right/pose/tip", "output": "/actions/panel/in/aim"}
+      ]
+    }
+  }
+}

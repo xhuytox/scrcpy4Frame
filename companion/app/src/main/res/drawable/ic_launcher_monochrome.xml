@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ic_launcher_foreground as a one-colour silhouette for themed icons: the lens window and the phone's
+     body are cut out of the visor, leaving the phone's outline, screen and speaker. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="64"
+        android:pivotY="63"
+        android:scaleX="0.52"
+        android:scaleY="0.52"
+        android:translateX="-10"
+        android:translateY="-9">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M5,54h2a4,4 0,0 1,4 4v12a4,4 0,0 1,-4 4h-2a4,4 0,0 1,-4 -4v-12a4,4 0,0 1,4 -4z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M121,54h2a4,4 0,0 1,4 4v12a4,4 0,0 1,-4 4h-2a4,4 0,0 1,-4 -4v-12a4,4 0,0 1,4 -4z" />
+        <!-- the visor's outer stroke, then its body minus the lens window and the phone's body -->
+        <path
+            android:pathData="M31,30H97A23,23 0,0 1,120 53V73A23,23 0,0 1,97 96H80Q74,96 71.5,90Q69,84 64,84Q59,84 56.5,90Q54,96 48,96H31A23,23 0,0 1,8 73V53A23,23 0,0 1,31 30Z"
+            android:strokeWidth="2"
+            android:strokeColor="#FFFFFFFF" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M31,30H97A23,23 0,0 1,120 53V73A23,23 0,0 1,97 96H80Q74,96 71.5,90Q69,84 64,84Q59,84 56.5,90Q54,96 48,96H31A23,23 0,0 1,8 73V53A23,23 0,0 1,31 30Z M32,38H53a3.5,3.5 0,0 1,3.5 -3.5h15a3.5,3.5 0,0 1,3.5 3.5H96a15,15 0,0 1,15 15v10a15,15 0,0 1,-15 15h-64a15,15 0,0 1,-15 -15v-10a15,15 0,0 1,15 -15z" />
+        <path
+            android:pathData="M56.5,33h15a5,5 0,0 1,5 5v36a5,5 0,0 1,-5 5h-15a5,5 0,0 1,-5 -5v-36a5,5 0,0 1,5 -5z"
+            android:strokeWidth="3"
+            android:strokeColor="#FFFFFFFF" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M57,40h14a1.5,1.5 0,0 1,1.5 1.5v29a1.5,1.5 0,0 1,-1.5 1.5h-14a1.5,1.5 0,0 1,-1.5 -1.5v-29a1.5,1.5 0,0 1,1.5 -1.5z" />
+        <path
+            android:pathData="M60.5,36.5H67.5"
+            android:strokeWidth="1.6"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineCap="round" />
+    </group>
+</vector>

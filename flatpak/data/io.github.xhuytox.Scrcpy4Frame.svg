@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b4654"/>
+      <stop offset="1" stop-color="#1c232c"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3ddc84"/>
+      <stop offset="1" stop-color="#1a9e8f"/>
+    </linearGradient>
+  </defs>
+  <!-- head strap stubs -->
+  <rect x="1" y="54" width="10" height="20" rx="4" fill="#2a323d"/>
+  <rect x="117" y="54" width="10" height="20" rx="4" fill="#2a323d"/>
+  <!-- headset visor with a nose bridge cut-out -->
+  <path d="M31 30H97A23 23 0 0 1 120 53V73A23 23 0 0 1 97 96H80
+           Q74 96 71.5 90Q69 84 64 84Q59 84 56.5 90Q54 96 48 96H31
+           A23 23 0 0 1 8 73V53A23 23 0 0 1 31 30Z"
+        fill="url(#shell)" stroke="#5a6878" stroke-width="2"/>
+  <!-- lens window -->
+  <rect x="17" y="38" width="94" height="40" rx="15" fill="#11161c"/>
+  <!-- phone -->
+  <rect x="51.5" y="33" width="25" height="46" rx="5" fill="#0b0f14" stroke="#f2f5f8" stroke-width="3"/>
+  <rect x="55.5" y="40" width="17" height="32" rx="1.5" fill="url(#screen)"/>
+  <line x1="60.5" y1="36.5" x2="67.5" y2="36.5" stroke="#f2f5f8" stroke-width="1.6" stroke-linecap="round"/>
+</svg>

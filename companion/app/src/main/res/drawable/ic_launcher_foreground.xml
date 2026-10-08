@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Frame app's icon (flatpak/data/io.github.xhuytox.Scrcpy4Frame.svg): a headset with a phone in
+     its lens window. Kept in that SVG's 128-unit coordinates, scaled into the 66dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="64"
+        android:pivotY="63"
+        android:scaleX="0.52"
+        android:scaleY="0.52"
+        android:translateX="-10"
+        android:translateY="-9">
+        <!-- head strap stubs -->
+        <path
+            android:fillColor="#FF2A323D"
+            android:pathData="M5,54h2a4,4 0,0 1,4 4v12a4,4 0,0 1,-4 4h-2a4,4 0,0 1,-4 -4v-12a4,4 0,0 1,4 -4z" />
+        <path
+            android:fillColor="#FF2A323D"
+            android:pathData="M121,54h2a4,4 0,0 1,4 4v12a4,4 0,0 1,-4 4h-2a4,4 0,0 1,-4 -4v-12a4,4 0,0 1,4 -4z" />
+        <!-- headset visor with a nose bridge cut-out -->
+        <path
+            android:pathData="M31,30H97A23,23 0,0 1,120 53V73A23,23 0,0 1,97 96H80Q74,96 71.5,90Q69,84 64,84Q59,84 56.5,90Q54,96 48,96H31A23,23 0,0 1,8 73V53A23,23 0,0 1,31 30Z"
+            android:strokeWidth="2"
+            android:strokeColor="#FF5A6878">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:endColor="#FF1C232C"
+                    android:endX="64"
+                    android:endY="96"
+                    android:startColor="#FF3B4654"
+                    android:startX="64"
+                    android:startY="30"
+                    android:type="linear" />
+            </aapt:attr>
+        </path>
+        <!-- lens window -->
+        <path
+            android:fillColor="#FF11161C"
+            android:pathData="M32,38h64a15,15 0,0 1,15 15v10a15,15 0,0 1,-15 15h-64a15,15 0,0 1,-15 -15v-10a15,15 0,0 1,15 -15z" />
+        <!-- phone -->
+        <path
+            android:fillColor="#FF0B0F14"
+            android:pathData="M56.5,33h15a5,5 0,0 1,5 5v36a5,5 0,0 1,-5 5h-15a5,5 0,0 1,-5 -5v-36a5,5 0,0 1,5 -5z"
+            android:strokeWidth="3"
+            android:strokeColor="#FFF2F5F8" />
+        <!-- The SVG's corner-to-corner gradient is in bounding-box units; this is its user-space equivalent. -->
+        <path android:pathData="M57,40h14a1.5,1.5 0,0 1,1.5 1.5v29a1.5,1.5 0,0 1,-1.5 1.5h-14a1.5,1.5 0,0 1,-1.5 -1.5v-29a1.5,1.5 0,0 1,1.5 -1.5z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:endColor="#FF1A9E8F"
+                    android:endX="82.02"
+                    android:endY="54.09"
+                    android:startColor="#FF3DDC84"
+                    android:startX="55.5"
+                    android:startY="40"
+                    android:type="linear" />
+            </aapt:attr>
+        </path>
+        <path
+            android:pathData="M60.5,36.5H67.5"
+            android:strokeWidth="1.6"
+            android:strokeColor="#FFF2F5F8"
+            android:strokeLineCap="round" />
+    </group>
+</vector>

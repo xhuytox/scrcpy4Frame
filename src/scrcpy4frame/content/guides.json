@@ -1,0 +1,197 @@
+{
+  "brands": [
+    {"id": "pixel", "label": "Google Pixel"},
+    {"id": "samsung", "label": "Samsung Galaxy"},
+    {"id": "xiaomi", "label": "Xiaomi / Redmi / POCO"},
+    {"id": "oneplus", "label": "OnePlus / OPPO / realme"},
+    {"id": "motorola", "label": "Motorola"},
+    {"id": "other", "label": "Another brand"}
+  ],
+  "vars": {
+    "buildNumber": {
+      "pixel": "Settings › About phone (or About tablet) › Build number",
+      "samsung": "Settings › About phone (or About tablet) › Software information › Build number",
+      "xiaomi": "Settings › About phone (or About tablet) › OS version (on older devices: MIUI version)",
+      "oneplus": "Settings › About device › Version › Build number",
+      "motorola": "Settings › About phone (or About tablet) › Build number",
+      "other": "Settings › About phone (or About tablet) › Build number (sometimes inside \"Software information\")"
+    },
+    "devOptions": {
+      "pixel": "Settings › System › Developer options",
+      "samsung": "Settings › Developer options (at the very bottom of Settings)",
+      "xiaomi": "Settings › Additional settings › Developer options",
+      "oneplus": "Settings › System settings › Developer options (OnePlus: Settings › System › Developer options)",
+      "motorola": "Settings › System › Developer options",
+      "other": "Settings › System › Developer options"
+    }
+  },
+  "steps": {
+    "devopts": {
+      "title": "Turn on Developer options",
+      "lines": [
+        "On your device, open {buildNumber}.",
+        "Tap the build number 7 times in a row. Enter your PIN if asked.",
+        "You'll see \"You are now a developer!\" (or \"Developer mode has been turned on\").",
+        "Already done this before? Just continue."
+      ],
+      "tip": "Can't find it? Search Settings for \"Build number\"."
+    },
+    "wireless": {
+      "title": "Turn on Wireless debugging",
+      "lines": [
+        "Make sure your device is on the same Wi-Fi as the Frame: {ssid}.",
+        "Open {devOptions}.",
+        "Scroll down and turn on Wireless debugging.",
+        "If asked \"Allow wireless debugging on this network?\", tick \"Always allow on this network\" and tap Allow."
+      ],
+      "tip": "We'll find your device automatically as soon as Wireless debugging is on.",
+      "help": [
+        "Is the device on the same Wi-Fi as the Frame ({ssid})? Guest networks usually block this.",
+        "Some routers isolate devices from each other (\"AP isolation\" or \"client isolation\"). Turn it off, or use the cable option below.",
+        "Wireless debugging turns itself off when the device changes Wi-Fi. Turn it off and on again.",
+        "No Wireless debugging option? Your device runs Android 10 or older: use the cable option."
+      ]
+    },
+    "pick_phone": {
+      "title": "Which one is your device?",
+      "lines": [
+        "We found more than one device with Wireless debugging on.",
+        "On your device, the Wireless debugging screen shows \"IP address & Port\". Pick the matching address."
+      ]
+    },
+    "pair_open": {
+      "title": "Open the pairing code",
+      "lines": [
+        "On your device, go to {devOptions}.",
+        "Scroll down and tap the words \"Wireless debugging\" (not the switch) to open its settings.",
+        "Tap \"Pair device with pairing code\".",
+        "Keep that window open and the device unlocked."
+      ],
+      "tip": "Don't use \"Pair device with QR code\". The device's camera can't see inside the headset.",
+      "help": [
+        "Keep the device's screen on. Locking it closes the pairing window.",
+        "Make sure you tapped \"Pair device with pairing code\", not the QR code option.",
+        "Still nothing? Use \"Enter details manually\"."
+      ]
+    },
+    "pair_code": {
+      "title": "Enter the pairing code",
+      "lines": [
+        "Your device shows a 6-digit \"Wi-Fi pairing code\".",
+        "Type it on the keypad. After pairing, your device lists the Frame as \"scrcpy4Frame@SteamFrame\" under Paired devices."
+      ]
+    },
+    "manual": {
+      "title": "Enter the details by hand",
+      "lines": [
+        "On the device's Wireless debugging screen, note the IP address and the port (\"IP address & Port\").",
+        "Then tap \"Pair device with pairing code\" and note that window's port and 6-digit code. This port is different from the first one."
+      ]
+    },
+    "connecting": {
+      "title": "Connecting",
+      "lines": ["Hang on while we connect to your device."]
+    },
+    "oem_input": {
+      "title": "Allow touch control",
+      "lines": [
+        "Your device needs one more developer setting before the Frame can control it.",
+        "{oemInputLine}",
+        "We'll notice as soon as it's on."
+      ],
+      "oemInputLine": {
+        "xiaomi": "Open {devOptions} and turn on \"USB debugging (Security settings)\". Xiaomi may ask you to sign in to a Mi account.",
+        "oneplus": "Open {devOptions} and turn on \"Disable permission monitoring\".",
+        "other": "Open {devOptions} and look for \"USB debugging (Security settings)\" or \"Disable permission monitoring\", and turn it on."
+      }
+    },
+    "companion": {
+      "title": "Add the companion app? (optional)",
+      "lines": [
+        "The scrcpy4Frame companion is a small app we can install on your device for you. You won't need to tap anything on the device.",
+        "Reconnects automatically: it turns Wireless debugging on when you open scrcpy4Frame, and off again when you close it.",
+        "Notifications in the headset: your device's notifications pop up on the Frame while scrcpy4Frame is running.",
+        "We give it two permissions over the debugging connection: \"modify secure settings\" (only used for Wireless debugging) and notification access. Uninstall it any time from Settings."
+      ]
+    },
+    "tile": {
+      "title": "Add a Wireless debugging shortcut",
+      "lines": [
+        "Wireless debugging turns itself off when your device restarts or changes Wi-Fi.",
+        "We can add a \"Wireless debugging\" button to your device's Quick Settings, so turning it back on is one tap."
+      ]
+    },
+    "tile_manual": {
+      "title": "Add the shortcut by hand",
+      "lines": [
+        "Your device didn't accept the shortcut automatically.",
+        "Open {devOptions} › Quick settings developer tiles.",
+        "Turn on \"Wireless debugging\".",
+        "Pull down Quick Settings, tap the pencil icon and drag the tile to the first page."
+      ]
+    },
+    "test": {
+      "title": "You're all set",
+      "lines": [
+        "Point and click to tap. Use the stick to scroll. Right-click (B) means Back.",
+        "To disconnect, press Disconnect in scrcpy4Frame, or the Steam Input shortcut for Alt+Q in the mirror window.",
+        "Next time, just open scrcpy4Frame and press Connect."
+      ]
+    },
+    "usb_setup": {
+      "title": "Turn on USB debugging",
+      "lines": [
+        "On your device, open {buildNumber} and tap it 7 times to turn on Developer options.",
+        "Open {devOptions} and turn on USB debugging.",
+        "Have a USB-C data cable ready. Charge-only cables won't work."
+      ]
+    },
+    "usb_plug": {
+      "title": "Plug your device into the Frame",
+      "lines": [
+        "Connect the device to the Frame's USB-C port.",
+        "If the device asks what the USB connection is for, choose \"File transfer\"."
+      ],
+      "help": [
+        "Try another cable. Many cables only charge.",
+        "On the device, pull down notifications, tap the USB notification and choose \"File transfer\".",
+        "Turn USB debugging off and on again in Developer options."
+      ]
+    },
+    "usb_auth": {
+      "title": "Allow USB debugging",
+      "lines": [
+        "Your device is asking \"Allow USB debugging?\"",
+        "Tick \"Always allow from this computer\" and tap Allow."
+      ]
+    },
+    "usb_perms": {
+      "title": "One-time permission on the Frame",
+      "lines": [
+        "SteamOS doesn't yet let apps talk to Android devices over USB.",
+        "Switch the Frame to Desktop Mode, open Konsole and run the command below once. It needs your password.",
+        "Then come back here and plug the device in again."
+      ],
+      "command": "echo 'SUBSYSTEM==\"usb\", ENV{ID_USB_INTERFACES}==\"*:ff4201:*\", TAG+=\"uaccess\"' | sudo tee /etc/udev/rules.d/51-scrcpy4frame-adb.rules && sudo udevadm control --reload && sudo udevadm trigger"
+    },
+    "usb_tcpip": {
+      "title": "Switching to Wi-Fi",
+      "lines": ["Your device is connected. We're switching it to Wi-Fi mode so you won't need the cable."]
+    },
+    "usb_unplug": {
+      "title": "Unplug the cable",
+      "lines": [
+        "Your device now connects over Wi-Fi. You can unplug the cable.",
+        "This lasts until the device restarts. After a restart, plug it in once more."
+      ]
+    },
+    "reenable": {
+      "title": "Turn Wireless debugging back on",
+      "lines": [
+        "Pull down Quick Settings on your device and tap \"Wireless debugging\".",
+        "No tile? Open {devOptions} and turn on Wireless debugging.",
+        "Make sure the device is on {ssid}."
+      ]
+    }
+  }
+}

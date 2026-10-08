@@ -1,0 +1,51 @@
+# Static protobuf and abseil-cpp for building adb. Build-time only.
+#
+# Held at protobuf 35.1: from 36.0 descriptor.h includes absl/log/log.h, whose LOG/VLOG macros
+# clash with adb's and break android-tools 37.0.0 (nmeum/android-tools#214, fixed in 37.0.0p1).
+# Upgrade protobuf and android-tools together.
+#
+# abseil 20250512.1 is the version protobuf 35.1 pins. Both build as C++20 to match android-tools.
+# Prefix paths point at /app to keep the SDK's shared protobuf/abseil out.
+name: protobuf
+buildsystem: cmake-ninja
+builddir: true
+config-opts:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DCMAKE_INSTALL_LIBDIR=lib
+  - -DCMAKE_PREFIX_PATH=/app
+  - -DCMAKE_CXX_STANDARD=20
+  - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  - -Dabsl_DIR=/app/lib/cmake/absl
+  - -Dprotobuf_BUILD_SHARED_LIBS=OFF
+  - -Dprotobuf_BUILD_TESTS=OFF
+  - -Dprotobuf_BUILD_CONFORMANCE=OFF
+  - -Dprotobuf_BUILD_EXAMPLES=OFF
+  - -Dprotobuf_WITH_ZLIB=OFF
+  - -Dprotobuf_INSTALL=ON
+  - -Dprotobuf_LOCAL_DEPENDENCIES_ONLY=ON
+cleanup:
+  - '*'
+sources:
+  - type: archive
+    url: https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protobuf-35.1.tar.gz
+    sha256: f0b6838e7522a8da96126d487068c959bc624926368f3024ac8fd03abd0a1ac4
+modules:
+  - name: abseil-cpp
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DCMAKE_CXX_STANDARD=20
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DBUILD_TESTING=OFF
+      - -DABSL_BUILD_TESTING=OFF
+      - -DABSL_PROPAGATE_CXX_STD=ON
+      - -DABSL_ENABLE_INSTALL=ON
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/abseil/abseil-cpp/releases/download/20250512.1/abseil-cpp-20250512.1.tar.gz
+        sha256: 9b7a064305e9fd94d124ffa6cc358592eb42b5da588fb4e07d09254aa40086db

@@ -1,0 +1,122 @@
+# scrcpy4Frame: mirror an Android phone on the Valve Steam Frame (SteamOS, aarch64).
+# Bundles adb, scrcpy, FFmpeg and the OpenVR helpers. Versions and sources are in modules/.
+# 6.11 is the newest KDE runtime + PySide BaseApp pair Flathub publishes for aarch64.
+#
+# Build from the repo root (needs dist/companion.apk):
+#   flatpak run org.flatpak.Builder --user --install --force-clean --install-deps-from=flathub \
+#     --repo=repo build-dir flatpak/io.github.xhuytox.Scrcpy4Frame.yml
+# scripts/frame-build.sh runs this on the Frame, scripts/build.sh in a container.
+
+id: io.github.xhuytox.Scrcpy4Frame
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+base: io.qt.PySide.BaseApp
+base-version: '6.11'
+command: scrcpy4frame
+
+finish-args:
+  # adb over Wi-Fi and mDNS phone discovery.
+  - --share=network
+  # X11 shared memory.
+  - --share=ipc
+  # Both: in Game Mode scrcpy runs with SDL_VIDEODRIVER=x11 under gamescope's Xwayland.
+  - --socket=x11
+  - --socket=wayland
+  # Phone audio forwarded by scrcpy.
+  - --socket=pulseaudio
+  # USB adb and GPU access.
+  - --device=all
+  # Shows the Frame's Wi-Fi network and IP address.
+  - --system-talk-name=org.freedesktop.NetworkManager
+  # Shows phone notifications as desktop notifications.
+  - --talk-name=org.freedesktop.Notifications
+  # flatpak-spawn --host for the OpenVR helpers (OpenVR init fails in the sandbox's PID namespace),
+  # and to install an update and restart into it.
+  - --talk-name=org.freedesktop.Flatpak
+
+build-options:
+  env:
+    # Drop the BaseApp's QtWebEngine and NumPy, which the app doesn't use.
+    BASEAPP_REMOVE_WEBENGINE: '1'
+    BASEAPP_DISABLE_NUMPY: '1'
+
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - /share/pkgconfig
+  - /share/man
+  - /share/doc
+  - '*.a'
+  - '*.la'
+
+modules:
+  # adb, built against static protobuf/abseil
+  - modules/protobuf.yml
+  - modules/android-tools.yml
+
+  # scrcpy client + server, decoding through a minimal FFmpeg with H.264/HEVC/AV1
+  - modules/ffmpeg.yml
+  - modules/scrcpy.yml
+
+  # Static OpenVR, which vr-toast and vr-mirror below link against
+  - modules/openvr.yml
+  - name: vr-toast
+    only-arches:
+      - aarch64
+      - x86_64
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DOPENVR_ROOT=/app
+    sources:
+      - type: dir
+        path: ../vr-toast
+        skip:
+          - build
+
+  # SteamVR phone panel helper
+  - modules/vr-mirror.yml
+
+  # Python dependencies (PySide6 comes from the BaseApp)
+  - modules/python3-deps.yml
+
+  - name: scrcpy4frame
+    buildsystem: simple
+    build-commands:
+      - find scrcpy4frame -name __pycache__ -prune -exec rm -rf {} +
+      - mkdir -p ${FLATPAK_DEST}/lib/scrcpy4frame
+      - cp -a scrcpy4frame ${FLATPAK_DEST}/lib/scrcpy4frame/
+      - python3 -m compileall -q ${FLATPAK_DEST}/lib/scrcpy4frame
+      - install -Dm755 scrcpy4frame-launcher ${FLATPAK_DEST}/bin/scrcpy4frame
+      - install -Dm644 companion.apk ${FLATPAK_DEST}/share/scrcpy4frame/companion.apk
+      - install -Dm644 ${FLATPAK_ID}.desktop -t ${FLATPAK_DEST}/share/applications/
+      - install -Dm644 ${FLATPAK_ID}.metainfo.xml -t ${FLATPAK_DEST}/share/metainfo/
+      - install -Dm644 ${FLATPAK_ID}.svg -t ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/
+      # Also the window icon, which the Frame's dashboard tab shows.
+      - install -Dm644 128x128.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png
+    sources:
+      - type: dir
+        path: ../src
+      - type: script
+        dest-filename: scrcpy4frame-launcher
+        commands:
+          - export PYTHONPATH="/app/lib/scrcpy4frame${PYTHONPATH:+:$PYTHONPATH}"
+          - exec python3 -m scrcpy4frame "$@"
+      # Built by scripts/build-companion.sh.
+      - type: file
+        path: ../dist/companion.apk
+      - type: file
+        path: data/io.github.xhuytox.Scrcpy4Frame.desktop
+      - type: file
+        path: data/io.github.xhuytox.Scrcpy4Frame.metainfo.xml
+      - type: file
+        path: data/io.github.xhuytox.Scrcpy4Frame.svg
+      # Rendered from the SVG by scripts/make-icons.py.
+      - type: file
+        path: data/icons/128x128.png

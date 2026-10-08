@@ -1,0 +1,20 @@
+{
+  "action_sets": [
+    {"name": "/actions/panel", "usage": "leftright"}
+  ],
+  "actions": [
+    {"name": "/actions/panel/in/hold", "type": "boolean", "requirement": "optional"},
+    {"name": "/actions/panel/in/depth", "type": "vector2", "requirement": "optional"},
+    {"name": "/actions/panel/in/aim", "type": "pose", "requirement": "optional"}
+  ],
+  "default_bindings": [
+    {"controller_type": "frame_controller", "binding_url": "vr-mirror-bindings-frame-controller.json"}
+  ],
+  "localization": [{
+    "language_tag": "en_US",
+    "/actions/panel": "scrcpy4Frame device overlay (while moving or resizing it)",
+    "/actions/panel/in/hold": "Keep holding the overlay",
+    "/actions/panel/in/depth": "Push the overlay away or pull it closer",
+    "/actions/panel/in/aim": "Pointer (resizing)"
+  }]
+}

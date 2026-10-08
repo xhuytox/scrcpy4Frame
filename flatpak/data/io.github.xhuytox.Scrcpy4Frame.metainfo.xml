@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.xhuytox.Scrcpy4Frame</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>scrcpy4Frame</name>
+  <summary>Mirror your Android device on the Steam Frame</summary>
+  <developer id="io.github.xhuytox">
+    <name>scrcpy4Frame contributors</name>
+  </developer>
+
+  <description>
+    <p>
+      scrcpy4Frame shows your Android device's screen while you wear the Steam Frame.
+      It connects to the device over Android's wireless debugging, then mirrors and controls
+      it with scrcpy.
+    </p>
+    <ul>
+      <li>Guided pairing using Android's wireless debugging</li>
+      <li>Low-latency mirroring and control, powered by scrcpy</li>
+      <li>Device notifications, shown as toasts in VR</li>
+      <li>Self-contained: adb and scrcpy are bundled, so nothing else has to be installed</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.xhuytox.Scrcpy4Frame.desktop</launchable>
+  <url type="homepage">https://github.com/xhuytox/scrcpy4Frame</url>
+  <url type="bugtracker">https://github.com/xhuytox/scrcpy4Frame/issues</url>
+
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>android</keyword>
+    <keyword>phone</keyword>
+    <keyword>tablet</keyword>
+    <keyword>mirror</keyword>
+    <keyword>scrcpy</keyword>
+    <keyword>adb</keyword>
+  </keywords>
+
+  <provides>
+    <binary>scrcpy4frame</binary>
+  </provides>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="1.0.0" date="2026-10-09">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

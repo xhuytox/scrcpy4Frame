@@ -1,0 +1,60 @@
+# SteamVR phone panel helper (see vr-mirror/README.md).
+# It runs on the host via `flatpak-spawn --host` and can't use /app/lib, so FFmpeg, OpenVR,
+# libstdc++ and libgcc are linked statically. Vulkan is dlopen()ed from the host.
+# Must come after openvr.yml in the manifest, since it links /app/lib/libopenvr_api.a.
+#
+# ffmpeg-vrmirror-static is an H.264-only static FFmpeg in its own prefix, so scrcpy's shared
+# FFmpeg in /app/lib is never picked up. Build-time only.
+#
+# Source paths in module files are relative to the file, hence ../../vr-mirror.
+name: vr-mirror
+only-arches:
+  - aarch64
+  - x86_64
+buildsystem: cmake-ninja
+builddir: true
+config-opts:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DOPENVR_ROOT=/app
+  - -DVR_MIRROR_WITH_OPENVR=ON
+  - -DVR_MIRROR_FFMPEG_STATIC=ON
+  - -DCMAKE_PREFIX_PATH=/app/vrmirror-ffmpeg
+build-options:
+  env:
+    PKG_CONFIG_PATH: /app/vrmirror-ffmpeg/lib/pkgconfig
+# Run the protocol unit tests (ctest) on the target arch.
+run-tests: true
+sources:
+  - type: dir
+    path: ../../vr-mirror
+    skip:
+      - build
+modules:
+  - name: ffmpeg-vrmirror-static
+    only-arches:
+      - aarch64
+      - x86_64
+    config-opts:
+      # FFmpeg's configure keeps the last --prefix, so this overrides flatpak-builder's /app.
+      - --prefix=/app/vrmirror-ffmpeg
+      - --enable-static
+      - --disable-shared
+      - --enable-pic
+      - --disable-programs
+      - --disable-doc
+      - --disable-autodetect
+      - --disable-network
+      - --disable-everything
+      - --enable-decoder=h264
+      - --enable-parser=h264
+      - --enable-swscale
+      - --disable-avdevice
+      - --disable-avfilter
+      - --disable-avformat
+      - --disable-swresample
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+        sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e

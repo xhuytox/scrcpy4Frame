@@ -1,0 +1,19 @@
+{
+  "source": "builtin",
+  "applications": [
+    {
+      "app_key": "io.github.xhuytox.scrcpy4frame.mirror",
+      "launch_type": "binary",
+      "binary_path_linux": "vr-mirror",
+      "binary_path_linux_arm": "vr-mirror",
+      "is_dashboard_overlay": true,
+      "action_manifest_path": "vr-mirror-actions.json",
+      "strings": {
+        "en_us": {
+          "name": "scrcpy4Frame device overlay",
+          "description": "Mirrors an Android device (scrcpy4Frame) as an overlay in SteamVR."
+        }
+      }
+    }
+  ]
+}

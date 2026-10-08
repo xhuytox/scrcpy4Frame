@@ -1,0 +1,32 @@
+# scrcpy client plus the matching prebuilt server, installed at scrcpy's default server path.
+#
+# Leave compile_server at its default: false would skip the server/ subdir, which is also what
+# installs the prebuilt server. With -Dprebuilt_server set it just copies the file, no Gradle.
+#
+# SDL3 (>= 3.2.0) comes from the runtime.
+name: scrcpy
+buildsystem: meson
+config-opts:
+  - -Dcompile_app=true
+  - -Dprebuilt_server=scrcpy-server
+  - -Dportable=false
+  - -Dstatic=false
+  - -Dv4l2=false
+  - -Dusb=false
+  - -Dvaapi=false
+  - -Dd3d11va=false
+  - -Dvideotoolbox=false
+cleanup:
+  - /share/applications/scrcpy.desktop
+  - /share/applications/scrcpy-console.desktop
+  - /share/man
+  - /share/zsh
+  - /share/bash-completion
+sources:
+  - type: archive
+    url: https://github.com/Genymobile/scrcpy/archive/refs/tags/v5.0.tar.gz
+    sha256: a431f6ed9e63629938464bbfe92b022d6dddf09d7e1d52758b3fc5b52d4c4b03
+  - type: file
+    url: https://github.com/Genymobile/scrcpy/releases/download/v5.0/scrcpy-server-v5.0
+    sha256: 26cbc9ad0aced6c2282455bef4fb43462605c1f8758c74b4ab1dbf818c229daa
+    dest-filename: scrcpy-server
