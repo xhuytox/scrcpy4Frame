@@ -5,15 +5,11 @@
 Mirror and control your Android device (phone or tablet) on the **Valve Steam Frame**, over Wi-Fi, using
 [scrcpy](https://github.com/Genymobile/scrcpy).
 
-- **Self-contained:** adb, scrcpy and the scrcpy server are bundled in the Flatpak. Nothing else needs
-  to be installed on the Frame, and nothing is installed on the Android device unless you opt in to the
-  companion app.
-- **Guided setup:** The setup wizard walks you through every step on the Android device.
-- **Optional companion app:** (opt-in) Installed and granted over adb with no taps on the device:
-  - turns Wireless debugging on when you open scrcpy4Frame and off when you close it, so it's only
-    on while you use it
-  - forwards the Android device's notifications to the Frame while scrcpy4Frame runs: pop-ups in VR,
-    or KDE pop-ups in Desktop Mode
+#### How to Setup (Video)
+[![Setup](https://img.youtube.com/vi/ItoB0gmfaqY/0.jpg)](https://www.youtube.com/watch?v=ItoB0gmfaqY)
+
+#### Usage (Video)
+[![Use Case](https://img.youtube.com/vi/fQXbZuZNFQI/0.jpg)](https://www.youtube.com/watch?v=fQXbZuZNFQI)
 
 ## Installation
 
@@ -22,15 +18,6 @@ On the Frame, in Desktop Mode, open Konsole and run:
 ```sh
 curl -sSL https://raw.githubusercontent.com/xhuytox/scrcpy4Frame/main/install.sh | bash
 ```
-
-This downloads `scrcpy4frame-aarch64.flatpak` from the [latest release](https://github.com/xhuytox/scrcpy4Frame/releases/latest)
-and installs it. You'll find scrcpy4Frame under Utilities in the
-application menu.
-
-When a newer release is out, scrcpy4Frame offers it in a banner as it starts, and in Settings › About.
-Updating there downloads and installs it, then restarts the app. Running the same command again
-also updates it. Your settings are kept. scrcpy4Frame also brings the companion app up to date: on
-connected devices right after an update, and on other devices when they connect.
 
 To uninstall:
 
@@ -46,7 +33,7 @@ flatpak uninstall --user io.github.xhuytox.Scrcpy4Frame
 
 ** On the Frame
 - Type the 6-digit pairing code on the Frame 
-- (optional Install companion app
+- (optional) Install companion app
 - (optional) Add Quick Settings tile for 1-tap wireless reconnect
 
 **Android 5–10:** a one-time cable setup. Plug the device into the Frame's USB-C port and tap
