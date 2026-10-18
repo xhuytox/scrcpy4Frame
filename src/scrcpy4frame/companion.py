@@ -67,6 +67,27 @@ def merged_listeners(existing: str, component: str = LISTENER_FULL) -> str:
     return ":".join(entries)
 
 
+_LIVE_LISTENERS = re.compile(r"^(\s*)Live notification listeners \(\d+\):")
+
+
+def listener_live(dumpsys: str) -> bool | None:
+    """Whether `dumpsys notification` lists the companion's listener as bound, or None if the dump
+    has no list of live listeners."""
+    lines = dumpsys.splitlines()
+    for i, line in enumerate(lines):
+        header = _LIVE_LISTENERS.match(line)
+        if not header:
+            continue
+        indent = len(header.group(1))
+        for entry in lines[i + 1:]:
+            if len(entry) - len(entry.lstrip()) <= indent:
+                break
+            if f"{PACKAGE}/" in entry:
+                return True
+        return False
+    return None
+
+
 def installed_version(adb: Adb, serial: str) -> int | None:
     out = adb.shell(serial, f"dumpsys package {PACKAGE}").out
     match = re.search(r"versionCode=(\d+)", out)
@@ -100,13 +121,7 @@ def install_and_grant(adb: Adb, serial: str, apk: Path, sdk: int) -> InstallRepo
     else:
         report.steps["reconnect"] = "skipped"
 
-    adb.shell(serial, f"cmd notification allow_listener {LISTENER}")
-    current = adb.shell(serial, "settings get secure enabled_notification_listeners").out
-    if not listener_enabled(current):
-        merged = merged_listeners(current)
-        adb.shell(serial, f"settings put secure enabled_notification_listeners '{merged}'")
-        current = adb.shell(serial, "settings get secure enabled_notification_listeners").out
-    report.steps["notifications"] = "ok" if listener_enabled(current) else "failed"
+    report.steps["notifications"] = "ok" if allow_listener(adb, serial) else "failed"
 
     # Keep Doze from killing the listener.
     adb.shell(serial, f"cmd deviceidle whitelist +{PACKAGE}")
@@ -120,6 +135,40 @@ def install_and_grant(adb: Adb, serial: str, apk: Path, sdk: int) -> InstallRepo
                         + ", ".join(failed) + "). Some devices need \"USB debugging (Security "
                         "settings)\" turned on in Developer options.")
     return report
+
+
+def allow_listener(adb: Adb, serial: str) -> bool:
+    """Grant notification access, which makes Android bind the listener. True if it's granted."""
+    adb.shell(serial, f"cmd notification allow_listener {LISTENER}")
+    current = adb.shell(serial, "settings get secure enabled_notification_listeners").out
+    if not listener_enabled(current):
+        merged = merged_listeners(current)
+        adb.shell(serial, f"settings put secure enabled_notification_listeners '{merged}'")
+        current = adb.shell(serial, "settings get secure enabled_notification_listeners").out
+    return listener_enabled(current)
+
+
+def restart_listener(adb: Adb, serial: str) -> str:
+    """Make Android bind the companion's listener again if it isn't bound, as reinstalling would.
+
+    The listener hosts the companion's socket and wake port. When its process dies, Android tries
+    to bind it again once, and some ROMs (Xiaomi's among them) block that, so it stays down while
+    notification access still shows as granted. Taking access away and granting it again makes a
+    fresh bind. Returns "running" if it was bound, "restarted", "failed", "revoked" if notification
+    access was turned off (left as it is), "missing" if the companion isn't installed, or "error" if
+    adb didn't answer.
+    """
+    listed = adb.shell(serial, f"pm list packages {PACKAGE}")
+    if listed.rc != 0:
+        return "error"
+    if f"package:{PACKAGE}" not in listed.out.split():
+        return "missing"
+    if listener_live(adb.shell(serial, "dumpsys notification").out):
+        return "running"
+    if not listener_enabled(adb.shell(serial, "settings get secure enabled_notification_listeners").out):
+        return "revoked"
+    adb.shell(serial, f"cmd notification disallow_listener {LISTENER}")
+    return "restarted" if allow_listener(adb, serial) else "failed"
 
 
 def uninstall(adb: Adb, serial: str) -> bool:

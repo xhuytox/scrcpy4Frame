@@ -119,6 +119,22 @@ start it again, so it only quits. The tag format and asset name are part of that
   next) or when it replaces a link. When it forgets a Wireless debugging device, the Frame then
   writes `adb_wifi_enabled=0` itself over adb, so the device ends up as `bye` would have left it.
 
+### Restarting the listener
+
+The socket server and the wake listener run only while Android has `NotifListener` bound. When its
+process dies, Android tries to bind it again once, 10 s later. Some ROMs (Xiaomi's among them) block
+that, and the listener stays down while notification access still shows as granted.
+
+- **The Frame notices** when two connections in a row get through `adb forward` to the device but
+  get no `hello`, and then checks over adb, at most every 5 minutes per link:
+  `pm list packages`, the "Live notification listeners" in `dumpsys notification`, and
+  `enabled_notification_listeners`.
+- **If the companion is installed and has access, but isn't bound**, the Frame runs
+  `cmd notification disallow_listener` then `allow_listener`. That's a fresh bind, as reinstalling
+  would make. Access the user turned off is left off.
+- **The companion's status screen** says "Granted, but Android has stopped it" in this state, rather
+  than only "Granted".
+
 ### Wireless debugging only while the Frame app is around (Android 11+, needs `WRITE_SECURE_SETTINGS`)
 
 Only when the `autoWirelessDebugging` preference is on, which is the default. Otherwise the companion

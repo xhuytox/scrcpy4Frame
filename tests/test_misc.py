@@ -90,6 +90,73 @@ def test_install_and_grant_flow_with_fake_adb(tmp_path):
     assert old.steps["reconnect"] == "skipped"
 
 
+LIVE_DUMP = """\
+  Notification listeners:
+    All notification listeners (2) enabled for current profiles:
+      ComponentInfo{com.google.android.gms/com.google.android.gms.nearby.NotificationListener}
+      ComponentInfo{%(pkg)s/%(pkg)s.NotifListener}
+    Live notification listeners (%(n)d):
+      ComponentInfo{com.google.android.gms/com.google.android.gms.nearby.NotificationListener} (user 0): x
+%(live)s    Snoozed notification listeners (0):
+  Notification assistant services:
+    Live notification assistant services (1):
+      ComponentInfo{%(pkg)s/%(pkg)s.Fake} (user 0): x
+"""
+
+
+def _dump(live: bool) -> str:
+    entry = f"      ComponentInfo{{{companion.PACKAGE}/{companion.LISTENER_FULL.split('/')[1]}}} (user 0): x\n"
+    return LIVE_DUMP % {"pkg": companion.PACKAGE, "n": 2 if live else 1, "live": entry if live else ""}
+
+
+def test_listener_live_reads_only_the_live_listeners():
+    assert companion.listener_live(_dump(live=True)) is True
+    # Enabled, and listed among the assistants, but not bound as a listener.
+    assert companion.listener_live(_dump(live=False)) is False
+    assert companion.listener_live("Can't find service: notification\n") is None
+
+
+class RestartAdb:
+    def __init__(self, installed=True, live=False, grants=True, rc=0):
+        self.installed, self.live, self.grants, self.rc = installed, live, grants, rc
+        self.listeners = companion.LISTENER_FULL
+        self.calls = []
+
+    def shell(self, serial, cmd, timeout=15):
+        self.calls.append(cmd)
+        if cmd.startswith("pm list packages"):
+            return CmdResult(self.rc, f"package:{companion.PACKAGE}\n" if self.installed else "", "")
+        if cmd == "dumpsys notification":
+            return CmdResult(0, _dump(self.live), "")
+        if cmd.startswith("cmd notification disallow_listener"):
+            self.listeners = "null"
+        if cmd.startswith("cmd notification allow_listener") and self.grants:
+            self.listeners = companion.LISTENER_FULL
+        if cmd == "settings get secure enabled_notification_listeners":
+            return CmdResult(0, self.listeners + "\n", "")
+        return CmdResult(0, "", "")
+
+
+def test_restart_listener_rebinds_only_a_listener_android_dropped():
+    adb = RestartAdb()
+    assert companion.restart_listener(adb, "s") == "restarted"
+    toggles = [c for c in adb.calls if c.startswith("cmd notification")]
+    assert toggles == [f"cmd notification disallow_listener {companion.LISTENER}",
+                       f"cmd notification allow_listener {companion.LISTENER}"]
+    running = RestartAdb(live=True)
+    assert companion.restart_listener(running, "s") == "running"
+    assert not any(c.startswith("cmd notification") for c in running.calls)
+    assert companion.restart_listener(RestartAdb(grants=False), "s") == "failed"
+    revoked = RestartAdb()
+    revoked.listeners = "null"                        # the user turned access off: leave it off
+    assert companion.restart_listener(revoked, "s") == "revoked"
+    assert not any(c.startswith("cmd notification") for c in revoked.calls)
+    missing = RestartAdb(installed=False)
+    assert companion.restart_listener(missing, "s") == "missing"
+    assert companion.restart_listener(RestartAdb(rc=1), "s") == "error"
+    assert not any(c.startswith("cmd notification") for c in missing.calls)
+
+
 def test_tile_detection():
     assert companion.tile_present(
         "wifi,bt,custom(com.android.settings/.development.qstile.DevelopmentTiles$WirelessDebugging)")

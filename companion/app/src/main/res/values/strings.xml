@@ -11,6 +11,7 @@
     <string name="status_companion_version">Companion version</string>
     <string name="granted">Granted</string>
     <string name="not_granted">Not granted</string>
+    <string name="granted_not_running">Granted, but Android has stopped it. scrcpy4Frame restarts it when the Frame connects, or turn it off and on again in Settings.</string>
     <string name="on">On</string>
     <string name="off">Off</string>
     <string name="unknown">Unknown</string>

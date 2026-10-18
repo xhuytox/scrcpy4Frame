@@ -21,7 +21,7 @@ from .notify.center import NotificationCenter
 from .settings import SettingsStore
 from .tasks import TaskRunner
 from .updater import Updater
-from .wizard import Wizard
+from .wizard import Wizard, brand_for_manufacturer
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class Runtime:
     next_attempt: float = 0.0
     failures: int = 0
     next_quiet_attempt: float = 0.0     # retry of the last known address while mDNS can't see it
+    listener_check: str = ""            # last notable companion.restart_listener() outcome
 
 
 @dataclass
@@ -481,6 +482,7 @@ class AppController(QObject):
             link.stop()
         link = CompanionLink(device.id, serial, self.adb, self.runner, self._wake_key, self)
         link.hello.connect(self._companion_hello)
+        link.listenerChecked.connect(self._companion_listener_checked)
         link.posted.connect(lambda dev, msg: self.center.posted(dev, msg, self._visible_mirror_device()))
         link.removed.connect(self.center.removed)
         link.stateChanged.connect(lambda *_: self.devicesChanged.emit())
@@ -498,6 +500,34 @@ class AppController(QObject):
         # 0 on Android 10 and older, which has no Wireless debugging to turn on.
         if device and type(port) is int and 0 <= port < 65536 and port != device.wake_port:
             self.store.upsert(replace(device, wake_port=port))
+
+    def _companion_listener_checked(self, device_id: str, outcome: str) -> None:
+        if outcome in ("restarted", "failed", "revoked", "missing"):
+            self.runtime.setdefault(device_id, Runtime()).listener_check = outcome
+            self.devicesChanged.emit()
+
+    @staticmethod
+    def _companion_note(device: SavedDevice, outcome: str, state: str) -> str:
+        if outcome == "restarted":
+            # Stays after it reconnects: the device will stop it again unless allowed to run.
+            if brand_for_manufacturer(device.manufacturer) == "xiaomi":
+                how = ("open Settings › Apps › Manage apps › scrcpy4Frame Companion, turn on Autostart and "
+                       "set Battery saver to \"No restrictions\".")
+            else:
+                how = "let scrcpy4Frame Companion run in the background in its battery settings."
+            return ("The device had stopped the companion app, so notifications stopped and Wireless debugging "
+                    "couldn't turn on by itself. It's been restarted. To keep it running, on the device " + how)
+        if state == "connected":
+            return ""
+        if outcome == "failed":
+            return ("The device stopped the companion app and it couldn't be restarted. On the device, turn "
+                    "notification access for scrcpy4Frame Companion off and on again.")
+        if outcome == "revoked":
+            return ("Notification access for scrcpy4Frame Companion is off on the device. Turn it on in the "
+                    "device's settings to get its notifications.")
+        if outcome == "missing":
+            return "The companion app isn't on the device anymore. Remove it here, then install it again."
+        return ""
 
     @Property(bool, constant=True)
     def gameMode(self) -> bool:
@@ -534,6 +564,7 @@ class AppController(QObject):
                 "sdk": device.sdk, "method": device.method, "status": rt.status, "detail": rt.detail,
                 "host": rt.serial.rpartition(":")[0] or device.last_host,
                 "companion": device.companion, "companionState": link.state if link else "",
+                "companionNote": self._companion_note(device, rt.listener_check, link.state if link else ""),
                 "qsTile": device.qs_tile, "mirroring": device.id == self._mirror_device,
             })
         return out
@@ -1010,6 +1041,8 @@ class AppController(QObject):
             return
         self._stop_link(device_id)
         self.store.upsert(replace(device, companion=False))
+        if rt:
+            rt.listener_check = ""
         if rt and rt.status == "connected":
             self.runner.run(companion.uninstall, self.adb, rt.serial,
                             on_done=lambda ok: self.banner.emit(

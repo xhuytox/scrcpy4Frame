@@ -777,6 +777,35 @@ def test_companion_hello_records_its_wake_port(ctl):
     assert controller.store.get("adb-1A2B3C4D-vWgJpq").wake_port == 0
 
 
+def test_companion_note_explains_a_restarted_listener(ctl):
+    controller, _ = ctl
+    xiaomi, pixel = "adb-XIAOMI-aaaaaa", "adb-PIXEL-bbbbbb"
+    controller.store.upsert(SavedDevice(id=xiaomi, serialno="XIAOMI", manufacturer="Xiaomi", companion=True))
+    controller.store.upsert(SavedDevice(id=pixel, serialno="PIXEL", manufacturer="Google", companion=True))
+    controller.links.update({xiaomi: FakeLink("waiting"), pixel: FakeLink("waiting")})
+
+    def notes():
+        return {row["id"]: row["companionNote"] for row in controller.devices}
+
+    controller._companion_listener_checked(xiaomi, "running")
+    controller._companion_listener_checked(pixel, "error")
+    assert notes() == {xiaomi: "", pixel: ""}
+    controller._companion_listener_checked(xiaomi, "restarted")
+    controller._companion_listener_checked(pixel, "failed")
+    assert "Autostart" in notes()[xiaomi]
+    assert "off and on again" in notes()[pixel]
+    controller.links[xiaomi].state = controller.links[pixel].state = "connected"
+    assert "Autostart" in notes()[xiaomi]             # it'll be stopped again unless allowed to run
+    assert notes()[pixel] == ""                       # it came back after all
+    controller.links[pixel].state = "waiting"
+    controller._companion_listener_checked(pixel, "revoked")
+    assert "Notification access" in notes()[pixel]
+    controller._companion_listener_checked(pixel, "restarted")
+    assert "Autostart" not in notes()[pixel] and "battery settings" in notes()[pixel]
+    controller.removeCompanion(xiaomi)
+    assert notes()[xiaomi] == ""
+
+
 def test_says_bye_only_when_the_app_leaves(ctl):
     controller, _ = ctl
     controller.server = None                          # no adb server to stop

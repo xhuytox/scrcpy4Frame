@@ -63,6 +63,10 @@ Run each scenario in Desktop Mode, then again in Game Mode (added as a non-Steam
   - Reboot the device with the app open. It reconnects by itself on trusted Wi-Fi.
   - Put the headset to sleep, or take the device out of Wi-Fi range. Wireless debugging turns off about a minute later (`frame-timeout`), also with the device's screen off.
   - Turn Wireless debugging on by hand with the app closed: the companion leaves it on.
+  - On a Xiaomi device with the app open, run `adb shell am force-stop io.github.xhuytox.scrcpy4frame.companion`.
+    The card's companion line goes back to waiting. Within about 30 seconds it says notifications are on
+    again (`listener connected`), with a note about Autostart. Where Android binds the listener again by
+    itself, it comes back without the note.
 - Close the app (Steam menu › Exit). `ssh $FRAME pgrep -a adb` should show nothing left running.
 
 ## 5. VR notifications

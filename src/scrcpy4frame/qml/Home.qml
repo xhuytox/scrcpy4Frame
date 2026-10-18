@@ -164,6 +164,14 @@ Flickable {
                         font.pixelSize: theme.fontSmall
                     }
                 }
+                Text {
+                    Layout.fillWidth: true
+                    visible: deviceCard.d.companion && (deviceCard.d.companionNote || "").length > 0
+                    text: deviceCard.d.companionNote || ""
+                    color: theme.textDim
+                    font.pixelSize: theme.fontSmall
+                    wrapMode: Text.WordWrap
+                }
 
                 Card {
                     id: reenableCard

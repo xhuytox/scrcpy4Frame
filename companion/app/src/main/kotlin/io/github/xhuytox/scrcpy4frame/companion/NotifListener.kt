@@ -36,7 +36,6 @@ class NotifListener : NotificationListenerService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val appMeta by lazy { AppMetaResolver(this) }
 
-    @Volatile private var listenerConnected = false
     private var session: Session? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var screenOnReceiver: BroadcastReceiver? = null
@@ -57,13 +56,13 @@ class NotifListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         Log.i(TAG, "listener connected")
-        listenerConnected = true
+        isConnected = true
         startComponents()
     }
 
     override fun onListenerDisconnected() {
         Log.i(TAG, "listener disconnected")
-        listenerConnected = false
+        isConnected = false
         stopComponents()
         super.onListenerDisconnected()
         // Ignored by the system if notification access was revoked.
@@ -75,7 +74,7 @@ class NotifListener : NotificationListenerService() {
     }
 
     override fun onDestroy() {
-        listenerConnected = false
+        isConnected = false
         stopComponents()
         super.onDestroy()
     }
@@ -194,7 +193,7 @@ class NotifListener : NotificationListenerService() {
         versionName = BuildConfig.VERSION_NAME,
         versionCode = BuildConfig.VERSION_CODE,
         sdk = Build.VERSION.SDK_INT,
-        listenerConnected = listenerConnected,
+        listenerConnected = isConnected,
         autoWirelessDebugging = Prefs.autoWirelessDebugging(this),
         canWriteSecureSettings = WirelessDebugging.canWriteSecureSettings(this),
         // Even before the port is bound: the server keeps retrying, and the Frame stores the port.
@@ -227,7 +226,7 @@ class NotifListener : NotificationListenerService() {
     }
 
     private fun dismiss(key: String): String? {
-        if (!listenerConnected) return Protocol.error("dismiss: notification listener is not connected")
+        if (!isConnected) return Protocol.error("dismiss: notification listener is not connected")
         return try {
             cancelNotification(key)
             null
@@ -393,10 +392,15 @@ class NotifListener : NotificationListenerService() {
         }
     }
 
-    private companion object {
-        const val TAG = "S4F.NotifListener"
-        const val MAX_TRACKED_KEYS = 1_000
-        const val VERIFY_DELAY_MS = 5_000L
-        const val ACTION_SESSION_CHECK = "io.github.xhuytox.scrcpy4frame.companion.SESSION_CHECK"
+    companion object {
+        /** Whether Android has the listener bound in this process, which notification access alone doesn't mean. */
+        @Volatile
+        var isConnected = false
+            private set
+
+        private const val TAG = "S4F.NotifListener"
+        private const val MAX_TRACKED_KEYS = 1_000
+        private const val VERIFY_DELAY_MS = 5_000L
+        private const val ACTION_SESSION_CHECK = "io.github.xhuytox.scrcpy4frame.companion.SESSION_CHECK"
     }
 }

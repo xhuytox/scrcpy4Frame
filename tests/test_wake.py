@@ -1,4 +1,4 @@
-"""Waking companions over UDP, and the companion link's `wakeKey` and `bye`."""
+"""Waking companions over UDP, and the companion link's `wakeKey`, `bye` and listener restarts."""
 
 import base64
 import json
@@ -190,6 +190,51 @@ def test_old_companions_get_neither_key_nor_bye(app):
     link.stop(bye=True)
     server.join(2)
     assert server.lines == [{"type": "ping"}]
+
+
+class HangUpSocket(threading.Thread):
+    """adb's end of a forward to the companion's socket when nothing listens on the device: it
+    accepts the connection, then drops it."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.server = socket.create_server(("127.0.0.1", 0))
+        self.port = self.server.getsockname()[1]
+        self.accepted = 0
+
+    def run(self):
+        while True:
+            conn, _ = self.server.accept()
+            self.accepted += 1
+            conn.close()
+
+
+def test_link_restarts_a_listener_that_never_answers(app):
+    from scrcpy4frame import companion
+    from scrcpy4frame.companion_link import RESTART_AFTER, CompanionLink
+
+    server = HangUpSocket()
+    server.start()
+    restarts = []
+
+    class Runner:
+        def run(self, fn, *args, on_done=None, on_error=None):
+            if fn is not companion.restart_listener:
+                return fn(*args)
+            assert args[1] == "192.168.1.23:41235"
+            restarts.append(server.accepted)
+            on_done("restarted")
+
+    checked = []
+    link = CompanionLink("dev", "192.168.1.23:41235", _NoAdb(), Runner())
+    link.listenerChecked.connect(lambda *a: checked.append(a))
+    link._retry.setInterval(10)
+    link._stopped = False
+    link._connect_socket(server.port)
+    assert _wait_for(app, lambda: server.accepted >= RESTART_AFTER + 3)
+    link.stop()
+    assert restarts == [RESTART_AFTER]                # after two silent connections, then not again soon
+    assert checked == [("dev", "restarted")]
 
 
 def test_discovery_can_ask_a_woken_device_directly():

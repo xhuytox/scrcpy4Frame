@@ -45,7 +45,8 @@ def test_home_states_render(ui):
                              android_release="15", sdk=35, method="tcpip" if status == "unreachable" else "wireless",
                              companion=i % 2 == 0, qs_tile=i == 4)
         controller.store.upsert(device)
-        controller.runtime[device.id] = Runtime(serial=f"192.168.1.{i}:5555", status=status)
+        controller.runtime[device.id] = Runtime(serial=f"192.168.1.{i}:5555", status=status,
+                                                listener_check="restarted" if i == 2 else "")
     controller.center.router.posted("adb-SER0-abcdef", {"key": "k", "pkg": "com.x", "appLabel": "X",
                                                         "title": "Hello", "text": "World"},
                                     controller.settings.value)

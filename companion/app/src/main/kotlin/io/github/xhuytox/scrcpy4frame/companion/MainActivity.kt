@@ -40,8 +40,14 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
-        binding.statusNotificationAccess.text =
-            row(R.string.status_notification_access, grantedText(isNotificationAccessGranted()))
+        binding.statusNotificationAccess.text = row(
+            R.string.status_notification_access,
+            when {
+                !isNotificationAccessGranted() -> getString(R.string.not_granted)
+                NotifListener.isConnected -> getString(R.string.granted)
+                else -> getString(R.string.granted_not_running)
+            },
+        )
         binding.statusWriteSecureSettings.text =
             row(R.string.status_write_secure_settings, grantedText(WirelessDebugging.canWriteSecureSettings(this)))
         binding.statusWirelessDebugging.text = row(
