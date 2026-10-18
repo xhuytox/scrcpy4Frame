@@ -22,7 +22,8 @@ _BUNDLED = {
     "vr-mirror": Path("/app/bin/vr-mirror"),
 }
 _BUNDLED_SERVER = Path("/app/share/scrcpy/scrcpy-server")
-_BUNDLED_COMPANION = Path("/app/share/scrcpy4frame/companion.apk")
+COMPANION_APK = "share/scrcpy4frame/companion.apk"      # under the Flatpak's files, /app in the sandbox
+_BUNDLED_COMPANION = Path("/app") / COMPANION_APK
 _BUNDLED_VR_MIRROR_MANIFEST = Path("/app/share/scrcpy4frame/vr-mirror.vrmanifest")
 _BUNDLED_ICON = Path(f"/app/share/icons/hicolor/128x128/apps/{APP_ID}.png")
 

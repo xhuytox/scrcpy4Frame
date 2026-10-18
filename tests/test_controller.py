@@ -832,6 +832,59 @@ def _connected_with_companion(controller, device_id="adb-1A2B3C4D-vWgJpq"):
     return device_id
 
 
+def test_app_update_brings_companions_on_connected_devices_up_to_date(ctl):
+    from scrcpy4frame.updater import CompanionTarget
+
+    controller, _ = ctl
+    device_id = _connected_with_companion(controller)
+    controller.store.upsert(SavedDevice(id="adb-PLAIN-aaaaaa", serialno="PLAIN"))
+    controller._on_services([Service("connect", device_id, "192.168.1.23", 41235),
+                             Service("connect", "adb-PLAIN-aaaaaa", "192.168.1.24", 37001)])
+    controller.store.upsert(SavedDevice(id="adb-OFF-bbbbbb", serialno="OFF", companion=True))
+    assert [row["status"] for row in controller.devices] == ["connected", "connected", "off"]
+    assert controller.updater.companions() == [CompanionTarget("Work phone", "192.168.1.23:41235", PIXEL.sdk)]
+
+
+def test_updates_an_older_companion_once_when_it_says_hello(ctl, monkeypatch):
+    from scrcpy4frame import companion
+
+    controller, _ = ctl
+    banners, updates = [], []
+    controller.banner.connect(lambda text, kind: banners.append((text, kind)))
+    device_id = _connected_with_companion(controller)
+    controller._companion_version = 3
+    monkeypatch.setattr(companion, "update", lambda adb, serial, apk, version, sdk: updates.append(
+        (serial, version, sdk)) or companion.InstallReport(ok=True))
+    for version in (3, 4, "2", True, None):           # as new, newer, or not a number
+        controller._companion_hello(device_id, {"type": "hello", "versionCode": version})
+    controller._companion_version = None              # no bundled APK
+    controller._companion_hello(device_id, {"type": "hello", "versionCode": 2})
+    assert updates == [] and banners == []
+
+    controller._companion_version = 3
+    controller._companion_hello(device_id, {"type": "hello", "versionCode": 2})
+    assert updates == [("192.168.1.23:41235", 3, PIXEL.sdk)]
+    assert banners == [("Updating the companion app on Work phone…", "info"),
+                       ("The companion app on Work phone is updated.", "info")]
+    controller._companion_hello(device_id, {"type": "hello", "versionCode": 2})     # once per run
+    assert len(updates) == 1
+
+
+def test_says_when_updating_an_older_companion_fails(ctl, monkeypatch):
+    from scrcpy4frame import companion
+
+    controller, _ = ctl
+    banners = []
+    controller.banner.connect(lambda text, kind: banners.append((text, kind)))
+    device_id = _connected_with_companion(controller)
+    controller._companion_version = 3
+    monkeypatch.setattr(companion, "update", lambda *args: companion.InstallReport(
+        steps={"install": "failed"}, error="Your device blocked the install."))
+    controller._companion_hello(device_id, {"type": "hello", "versionCode": 2})
+    assert banners[-1] == ("Updating the companion app on Work phone didn't finish: Your device blocked the "
+                           "install. scrcpy4Frame tries again the next time it starts.", "error")
+
+
 def test_forgetting_a_device_uninstalls_its_companion_and_drops_its_settings(ctl):
     from scrcpy4frame import companion
 

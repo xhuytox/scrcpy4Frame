@@ -29,7 +29,8 @@ application menu.
 
 When a newer release is out, scrcpy4Frame offers it in a banner as it starts, and in Settings › About.
 Updating there downloads and installs it, then restarts the app. Running the same command again
-also updates it. Your settings are kept.
+also updates it. Your settings are kept. scrcpy4Frame also brings the companion app up to date: on
+connected devices right after an update, and on other devices when they connect.
 
 To uninstall:
 

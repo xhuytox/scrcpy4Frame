@@ -54,7 +54,14 @@ startup, it lists `https://api.github.com/repos/xhuytox/scrcpy4Frame/releases` a
 with the highest `vX.Y.Z` tag that has the asset and isn't a draft or pre-release, whatever order
 GitHub lists them in. If that's newer than the running version, it offers it. Updating downloads the
 asset, checks it against GitHub's sha256 `digest`, then runs `install.sh`'s
-`flatpak install --user --reinstall --bundle` on the host through `flatpak-spawn --host`. In Desktop
+`flatpak install --user --reinstall --bundle` on the host through `flatpak-spawn --host`. Next it
+copies `files/share/scrcpy4frame/companion.apk` out of the installed version (the directory
+`flatpak info --user --show-location` prints, on the host, since the sandbox only sees its own `/app`)
+and reads its `versionCode` from the APK's binary manifest. On each connected device whose saved
+entry has the companion and whose installed companion (`dumpsys package`) has a lower `versionCode`,
+it runs the same install and grants as a first install. A companion failure doesn't undo the app
+update; the banner says which devices were updated and which weren't. Devices that weren't
+connected get the new companion when they next connect (see `hello` below). In Desktop
 Mode it then restarts with `flatpak run` once this instance has exited; in Game Mode Steam has to
 start it again, so it only quits. The tag format and asset name are part of that check too.
 
@@ -70,6 +77,10 @@ start it again, so it only quits. The tag format and asset name are part of that
  "listenerConnected":true,"autoWirelessDebugging":true,"canWriteSecureSettings":true,"wakePort":38490}
 ```
 
+- **`versionCode`** lower than the bundled APK's makes the Frame install the bundled APK over it, with
+  the same grants as a first install, after checking the installed `versionCode` with
+  `dumpsys package`. It tries once per device each time the app runs, so a failed install isn't
+  retried until the next start. It never installs an older APK over a newer companion.
 - **`wakePort`** (protocol 2) is the UDP port of the wake listener, or `0` on Android 10 and older. It's
   reported while the listener still retries binding, because the Frame needs it stored before the
   first time Wireless debugging goes off. Its presence tells the Frame the companion takes `wakeKey`

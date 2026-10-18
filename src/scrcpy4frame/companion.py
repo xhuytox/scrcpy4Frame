@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+import struct
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -89,9 +91,53 @@ def listener_live(dumpsys: str) -> bool | None:
 
 
 def installed_version(adb: Adb, serial: str) -> int | None:
+    """The companion's versionCode on the device, or None if it isn't installed."""
     out = adb.shell(serial, f"dumpsys package {PACKAGE}").out
-    match = re.search(r"versionCode=(\d+)", out)
+    match = re.search(rf"Package \[{re.escape(PACKAGE)}\][\s\S]*?versionCode=(\d+)", out)
     return int(match.group(1)) if match else None
+
+
+# A compiled AndroidManifest.xml is a chunk of chunks. Android finds android: attributes by the
+# resource ID the resource map gives each attribute name.
+_XML_CHUNK = 0x0003
+_XML_RESOURCE_MAP = 0x0180
+_XML_START_ELEMENT = 0x0102
+_VERSION_CODE_ID = 0x0101021B           # android:versionCode
+_INT_TYPES = (0x10, 0x11)               # TYPE_INT_DEC, TYPE_INT_HEX
+
+
+def manifest_version(data: bytes) -> int | None:
+    """android:versionCode of a compiled AndroidManifest.xml, or None if it has none."""
+    kind, pos, _size = struct.unpack_from("<HHI", data, 0)
+    if kind != _XML_CHUNK:
+        return None
+    ids: tuple[int, ...] = ()
+    while pos + 8 <= len(data):
+        kind, header, size = struct.unpack_from("<HHI", data, pos)
+        if size < 8:
+            return None
+        if kind == _XML_RESOURCE_MAP:
+            ids = struct.unpack_from(f"<{(size - header) // 4}I", data, pos + header)
+        elif kind == _XML_START_ELEMENT:       # the first one is <manifest>
+            _ns, _name, start, stride, count = struct.unpack_from("<IIHHH", data, pos + header)
+            for i in range(count):
+                _ns, name, _raw, _len, _res, kind, value = struct.unpack_from(
+                    "<IIIHBBI", data, pos + header + start + i * stride)
+                if name < len(ids) and ids[name] == _VERSION_CODE_ID:
+                    return value if kind in _INT_TYPES else None
+            return None
+        pos += size
+    return None
+
+
+def apk_version(apk: Path) -> int | None:
+    """The versionCode of an APK, or None if it can't be read."""
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            return manifest_version(archive.read("AndroidManifest.xml"))
+    except (OSError, KeyError, zipfile.BadZipFile, struct.error) as exc:
+        log.warning("couldn't read the version of %s: %s", apk, exc)
+        return None
 
 
 def install_and_grant(adb: Adb, serial: str, apk: Path, sdk: int) -> InstallReport:
@@ -135,6 +181,24 @@ def install_and_grant(adb: Adb, serial: str, apk: Path, sdk: int) -> InstallRepo
                         + ", ".join(failed) + "). Some devices need \"USB debugging (Security "
                         "settings)\" turned on in Developer options.")
     return report
+
+
+def update(adb: Adb, serial: str, apk: Path, version: int, sdk: int) -> InstallReport | None:
+    """Install `apk`, whose versionCode is `version`, over an older companion, granting what
+    install_and_grant() grants. None if the device has no companion, or one at least as new."""
+    installed = installed_version(adb, serial)
+    log.info("companion on %s: %s, the update has %s", serial, installed or "not installed", version)
+    if installed is None or installed >= version:
+        return None
+    return install_and_grant(adb, serial, apk, sdk)
+
+
+def update_failure(name: str, report: InstallReport) -> str:
+    """What to say when update() didn't finish on the device called `name`."""
+    text = f"Updating the companion app on {name} didn't finish: {report.error}"
+    if report.steps.get("install") != "ok":     # the old one is still there, so the next run tries again
+        text += " scrcpy4Frame tries again the next time it starts."
+    return text
 
 
 def allow_listener(adb: Adb, serial: str) -> bool:

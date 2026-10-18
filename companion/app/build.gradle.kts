@@ -14,8 +14,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // Reported to the Frame in the protocol "hello" message.
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
     }
 
     buildFeatures {

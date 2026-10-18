@@ -25,7 +25,8 @@ Rectangle {
             text: {
                 var latest = "v" + banner.u.latest
                 if (banner.u.state === "installed")
-                    return banner.u.error || ("scrcpy4Frame " + latest + " is installed. Restart it to finish updating.")
+                    return banner.u.error || ("scrcpy4Frame " + latest + " is installed. Restart it to finish updating."
+                                              + (banner.u.note ? " " + banner.u.note : ""))
                 if (banner.u.error)
                     return "Couldn't update to " + latest + ". " + banner.u.error
                 return "scrcpy4Frame " + latest + " is available. You're on v" + banner.u.current + "."

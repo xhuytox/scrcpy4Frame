@@ -2,7 +2,8 @@
 
 The install is install.sh's: download the release bundle, then `flatpak install --user --reinstall
 --bundle` on the host. The running copy keeps its files until it quits, so restarting starts the
-new version.
+new version. Then the new version's companion APK goes on each connected device with an older
+companion.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Callable
 
 from PySide6.QtCore import QCoreApplication, QObject, QProcess, Signal
 
-from . import __version__, paths
+from . import __version__, companion, paths
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ FLATHUB_REPO = "https://dl.flathub.org/repo/flathub.flatpakrepo"
 TIMEOUT_S = 30
 CHUNK = 256 * 1024
 INSTALL_TIMEOUT_S = 30 * 60     # a release on a new runtime pulls that runtime from Flathub
+HOST_TIMEOUT_S = 60
 RELAUNCH_WAIT_MS = 5000
 # Runs on the host: says it's up, waits (up to 30 s) for this instance to exit, then starts the
 # installed version. Its output goes nowhere once we've quit, so nothing may write to it.
@@ -55,6 +57,14 @@ class Release:
     @property
     def name(self) -> str:
         return ".".join(map(str, self.version))
+
+
+@dataclass(frozen=True)
+class CompanionTarget:
+    """A connected device with the companion, which an update brings up to date."""
+    name: str
+    serial: str
+    sdk: int
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -168,6 +178,63 @@ def install_bundle(bundle: Path) -> None:
         bundle.unlink(missing_ok=True)
 
 
+def _on_host(*args: str) -> str:
+    """Run a command on the host and return its output."""
+    try:
+        result = subprocess.run(_host(*args), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                timeout=HOST_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise UpdateError(f"{args[0]} took too long") from None
+    if result.returncode != 0:
+        raise UpdateError(f"{' '.join(args)}: {(result.stdout + result.stderr).strip() or result.returncode}")
+    return result.stdout.strip()
+
+
+# Runs on a worker thread.
+def copy_installed_companion(target: Path) -> Path:
+    """Copy the companion APK out of the installed version, the one just updated to, which this
+    sandbox can't see. The host sees the cache dir at the same path."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    location = _on_host("flatpak", "info", "--user", "--show-location", paths.APP_ID)
+    _on_host("cp", "--", f"{location}/files/{paths.COMPANION_APK}", str(target))
+    return target
+
+
+# Runs on a worker thread.
+def update_companions(adb, targets: list[CompanionTarget]) -> list[tuple[str, companion.InstallReport]]:
+    """Install the installed version's companion on each device whose companion is older. Returns
+    each of those devices' name and how its install went."""
+    apk = copy_installed_companion(download_dir() / "companion.apk")
+    try:
+        version = companion.apk_version(apk)
+        if version is None:
+            raise UpdateError("the new version's companion APK has no versionCode")
+        results = []
+        for target in targets:
+            report = companion.update(adb, target.serial, apk, version, target.sdk)
+            if report is not None:
+                results.append((target.name, report))
+        return results
+    finally:
+        apk.unlink(missing_ok=True)
+
+
+def _names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def companion_note(results: list[tuple[str, companion.InstallReport]]) -> str:
+    """What the banner adds about the companions update_companions() installed."""
+    updated = [name for name, report in results if report.ok]
+    notes = []
+    if len(updated) == 1:
+        notes.append(f"The companion app on {updated[0]} is updated too.")
+    elif updated:
+        notes.append(f"The companion apps on {_names(updated)} are updated too.")
+    notes += [companion.update_failure(name, report) for name, report in results if not report.ok]
+    return " ".join(notes)
+
+
 def describe(error: BaseException) -> str:
     if isinstance(error, UpdateError):
         return str(error)
@@ -184,14 +251,18 @@ class Updater(QObject):
     changed = Signal()
     _progressFromThread = Signal(float)
 
-    def __init__(self, runner, game_mode: bool, parent: QObject | None = None):
+    def __init__(self, runner, game_mode: bool, adb=None,
+                 companions: Callable[[], list[CompanionTarget]] | None = None, parent: QObject | None = None):
         super().__init__(parent)
         self.runner = runner
         self.game_mode = game_mode
+        self.adb = adb
+        self.companions = companions            # asked for the devices to update once installed
         self.release: Release | None = None     # newer than this version
-        self.state = "idle"                     # idle | downloading | installing | installed
+        self.state = "idle"                     # idle | downloading | installing | companion | installed
         self.progress = 0.0
         self.error = ""
+        self.note = ""                          # how updating the devices' companions went
         self.banner = False
         self._checked = False
         self._closing = False
@@ -200,7 +271,7 @@ class Updater(QObject):
     def view(self) -> dict:
         return {"available": self.release is not None, "state": self.state,
                 "current": __version__, "latest": self.release.name if self.release else "",
-                "progress": self.progress, "error": self.error, "banner": self.banner,
+                "progress": self.progress, "error": self.error, "note": self.note, "banner": self.banner,
                 # Under gamescope Steam has to start it, so it can only quit.
                 "canRestart": not self.game_mode}
 
@@ -236,7 +307,20 @@ class Updater(QObject):
 
     def _installed(self, _result) -> None:
         log.info("installed scrcpy4Frame %s", self.release.name)
-        self.state, self.banner = "installed", True
+        targets = self.companions() if self.adb is not None and self.companions else []
+        if not targets:
+            self._finish("")
+            return
+        self.state = "companion"
+        self.changed.emit()
+        self.runner.run(update_companions, self.adb, targets,
+                        on_done=lambda results: self._finish(companion_note(results)),
+                        on_error=lambda _error: self._finish(
+                            "Couldn't check whether the companion app needs updating. scrcpy4Frame checks "
+                            "again the next time it starts."))
+
+    def _finish(self, note: str) -> None:
+        self.state, self.note, self.banner = "installed", note, True
         self.changed.emit()
 
     def _failed(self, error: BaseException) -> None:

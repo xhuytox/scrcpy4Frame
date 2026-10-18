@@ -1,4 +1,6 @@
 import json
+import struct
+import zipfile
 
 from scrcpy4frame import companion
 from scrcpy4frame.adb import CmdResult
@@ -88,6 +90,76 @@ def test_install_and_grant_flow_with_fake_adb(tmp_path):
     assert report.steps == {"install": "ok", "reconnect": "ok", "notifications": "ok", "battery": "ok"}
     old = companion.install_and_grant(FakeAdb(), "s", tmp_path / "c.apk", sdk=29)
     assert old.steps["reconnect"] == "skipped"
+
+
+def _manifest(attrs):
+    """A compiled AndroidManifest.xml whose <manifest> has `attrs`: (resource ID, value type, value)."""
+    ids = [rid for rid, _kind, _value in attrs]
+    resource_map = struct.pack("<HHI", 0x0180, 8, 8 + 4 * len(ids)) + struct.pack(f"<{len(ids)}I", *ids)
+    body = struct.pack("<IIHHHHHH", 0xFFFFFFFF, 0, 20, 20, len(attrs), 0, 0, 0) + b"".join(
+        struct.pack("<IIIHBBI", 0, i, 0xFFFFFFFF, 8, 0, kind, value) for i, (_id, kind, value) in enumerate(attrs))
+    element = struct.pack("<HHIII", 0x0102, 16, 16 + len(body), 1, 0xFFFFFFFF) + body
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(resource_map) + len(element)) + resource_map + element
+
+
+def test_reads_the_version_code_of_an_apk(tmp_path):
+    version_name = (0x0101021C, 0x03, 0)              # android:versionName, a string
+    manifest = _manifest([version_name, (0x0101021B, 0x10, 7)])
+    assert companion.manifest_version(manifest) == 7
+    assert companion.manifest_version(_manifest([version_name])) is None
+    assert companion.manifest_version(b"<?xml version='1.0'?><manifest/>") is None
+    apk = tmp_path / "c.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", manifest)
+    assert companion.apk_version(apk) == 7
+    for broken in ({"AndroidManifest.xml": manifest[:30]}, {"classes.dex": b""}):
+        with zipfile.ZipFile(apk, "w") as archive:
+            for name, data in broken.items():
+                archive.writestr(name, data)
+        assert companion.apk_version(apk) is None
+    apk.write_bytes(b"not a zip")
+    assert companion.apk_version(apk) is None
+    assert companion.apk_version(tmp_path / "missing.apk") is None
+
+
+class VersionAdb:
+    """Answers `dumpsys package` for a companion at `version`, or for none."""
+
+    def __init__(self, version):
+        self.version = version
+
+    def shell(self, serial, cmd, timeout=15):
+        assert cmd == f"dumpsys package {companion.PACKAGE}"
+        if self.version is None:
+            return CmdResult(0, "Dexopt state:\n  versionCode=9\n", "")
+        return CmdResult(0, f"Packages:\n  Package [{companion.PACKAGE}] (5f1e2a7):\n    userId=10234\n"
+                            f"    versionCode={self.version} minSdk=26 targetSdk=36\n", "")
+
+
+def test_update_installs_only_over_an_older_companion(tmp_path, monkeypatch):
+    assert companion.installed_version(VersionAdb(3), "s") == 3
+    assert companion.installed_version(VersionAdb(None), "s") is None
+    installs = []
+    monkeypatch.setattr(companion, "install_and_grant", lambda adb, serial, apk, sdk: installs.append(
+        (serial, apk, sdk)) or companion.InstallReport(ok=True))
+    apk = tmp_path / "c.apk"
+    assert companion.update(VersionAdb(2), "s", apk, 3, 34).ok
+    assert installs == [("s", apk, 34)]
+    for installed in (3, 4, None):                    # as new, newer, or not on the device
+        assert companion.update(VersionAdb(installed), "s", apk, 3, 34) is None
+    assert len(installs) == 1
+
+
+def test_update_failure_says_whether_it_is_tried_again():
+    blocked = companion.InstallReport(steps={"install": "failed"}, error="Your device blocked the install.")
+    assert companion.update_failure("Redmi", blocked) == (
+        "Updating the companion app on Redmi didn't finish: Your device blocked the install. "
+        "scrcpy4Frame tries again the next time it starts.")
+    refused = companion.InstallReport(steps={"install": "ok", "notifications": "failed"},
+                                      error="The companion is installed, but your device refused some permissions.")
+    assert companion.update_failure("Redmi", refused) == (
+        "Updating the companion app on Redmi didn't finish: The companion is installed, but your device "
+        "refused some permissions.")             # it's the new one now, so nothing to try again
 
 
 LIVE_DUMP = """\

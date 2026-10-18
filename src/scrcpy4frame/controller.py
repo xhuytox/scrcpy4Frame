@@ -20,7 +20,7 @@ from .mirror import EXIT_DISCONNECTED, build_args, classify
 from .notify.center import NotificationCenter
 from .settings import SettingsStore
 from .tasks import TaskRunner
-from .updater import Updater
+from .updater import CompanionTarget, Updater
 from .wizard import Wizard, brand_for_manufacturer
 
 log = logging.getLogger(__name__)
@@ -161,6 +161,9 @@ class AppController(QObject):
         self._usb_poll = False
         self.wizard = Wizard(_WizardActions(self), companion_available=paths.companion_apk_path() is not None,
                              on_change=self.wizardChanged.emit)
+        bundled = paths.companion_apk_path()
+        self._companion_version = companion.apk_version(bundled) if bundled else None    # the bundled APK's
+        self._companion_updates: set[str] = set()      # devices whose older companion this run tried to update
         self._wizard_active = False
         self._mirror_proc: QProcess | None = None
         self._vr_session: vrmirror.VrMirrorSession | None = None
@@ -192,7 +195,7 @@ class AppController(QObject):
         self.center.inAppToast.connect(self.toast)
         self.center.actionRequested.connect(self._notification_action)
         self.mirroringChanged.connect(self._push_vr_audio)
-        self.updater = Updater(self.runner, game_mode, self)
+        self.updater = Updater(self.runner, game_mode, self.adb, self._companion_targets, self)
         self.updater.changed.connect(self.updateChanged)
         self._poll_timer = QTimer(self, interval=POLL_MS, timeout=self._poll)
         self._tick_timer = QTimer(self, interval=1000, timeout=self._tick)
@@ -494,12 +497,43 @@ class AppController(QObject):
         if link:
             link.stop(bye=bye)
 
+    def _companion_targets(self) -> list[CompanionTarget]:
+        """The connected devices with the companion, whose companion an app update brings up to date."""
+        targets = []
+        for device in self.store.all():
+            rt = self.runtime.get(device.id)
+            if device.companion and rt and rt.status == "connected" and rt.serial:
+                targets.append(CompanionTarget(device.display_name, rt.serial, device.sdk))
+        return targets
+
     def _companion_hello(self, device_id: str, message: dict) -> None:
         port = message.get("wakePort")
         device = self.store.get(device_id)
         # 0 on Android 10 and older, which has no Wireless debugging to turn on.
         if device and type(port) is int and 0 <= port < 65536 and port != device.wake_port:
             self.store.upsert(replace(device, wake_port=port))
+        self._update_companion(device_id, message.get("versionCode"))
+
+    def _update_companion(self, device_id: str, version) -> None:
+        """Install the bundled companion over an older one, once per device per run. An app update
+        does the same for the devices connected then (Updater)."""
+        device, link, latest = self.store.get(device_id), self.links.get(device_id), self._companion_version
+        if (device is None or link is None or latest is None or type(version) is not int or version >= latest
+                or device_id in self._companion_updates):
+            return
+        self._companion_updates.add(device_id)
+        name = device.display_name
+        self.banner.emit(f"Updating the companion app on {name}…", "info")
+
+        def done(report: companion.InstallReport | None) -> None:
+            if report is None:          # adb found it no older after all
+                return
+            self.banner.emit(f"The companion app on {name} is updated." if report.ok else
+                             companion.update_failure(name, report), "info" if report.ok else "error")
+
+        self.runner.run(companion.update, self.adb, link.serial, paths.companion_apk_path(), latest, device.sdk,
+                        on_done=done, on_error=lambda e: done(
+                            companion.InstallReport(error=f"Installing the companion failed: {e}")))
 
     def _companion_listener_checked(self, device_id: str, outcome: str) -> None:
         if outcome in ("restarted", "failed", "revoked", "missing"):

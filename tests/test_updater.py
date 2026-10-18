@@ -10,8 +10,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from scrcpy4frame import updater  # noqa: E402
-from scrcpy4frame.updater import Release, UpdateError  # noqa: E402
+from scrcpy4frame import companion, updater  # noqa: E402
+from scrcpy4frame.updater import CompanionTarget, Release, UpdateError  # noqa: E402
 
 ASSET = "scrcpy4frame-aarch64.flatpak"
 
@@ -101,6 +101,68 @@ def test_install_runs_flatpak_on_the_host(tmp_path, monkeypatch):
     assert not bundle.exists()
 
 
+DEPLOY = "/home/deck/.local/share/flatpak/app/io.github.xhuytox.Scrcpy4Frame/aarch64/master/0a1b2c"
+
+
+def test_copies_the_companion_out_of_the_installed_version(tmp_path, monkeypatch):
+    commands = []
+
+    def run(command, **kw):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, DEPLOY + "\n" if "info" in command else "", "")
+    monkeypatch.setattr(updater.subprocess, "run", run)
+    target = tmp_path / "update" / "companion.apk"
+    assert updater.copy_installed_companion(target) == target
+    assert commands == [
+        ["flatpak-spawn", "--host", "flatpak", "info", "--user", "--show-location", "io.github.xhuytox.Scrcpy4Frame"],
+        ["flatpak-spawn", "--host", "cp", "--", DEPLOY + "/files/share/scrcpy4frame/companion.apk", str(target)],
+    ]
+    monkeypatch.setattr(updater.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(
+        command, 1, "", "error: io.github.xhuytox.Scrcpy4Frame/*unspecified*/*unspecified* not installed"))
+    with pytest.raises(UpdateError, match="not installed"):
+        updater.copy_installed_companion(target)
+
+
+def test_update_companions_installs_the_new_companion_where_it_is_older(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    copies = []
+
+    def copy(target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"apk")
+        copies.append(target)
+        return target
+    monkeypatch.setattr(updater, "copy_installed_companion", copy)
+    monkeypatch.setattr(updater.companion, "apk_version", lambda apk: 3)
+    reports = {"old": companion.InstallReport(ok=True),
+               "blocked": companion.InstallReport(error="Your device blocked the install.")}
+    seen = []
+    monkeypatch.setattr(updater.companion, "update", lambda adb, serial, apk, version, sdk: seen.append(
+        (adb, serial, apk.read_bytes(), version, sdk)) or reports.get(serial))
+    targets = [CompanionTarget("Pixel 8", "old", 35), CompanionTarget("Tablet", "current", 33),
+               CompanionTarget("Redmi", "blocked", 34)]
+    results = updater.update_companions("adb", targets)
+    assert [(name, report.ok) for name, report in results] == [("Pixel 8", True), ("Redmi", False)]
+    assert seen == [("adb", "old", b"apk", 3, 35), ("adb", "current", b"apk", 3, 33), ("adb", "blocked", b"apk", 3, 34)]
+    assert not copies[0].exists()
+
+    monkeypatch.setattr(updater.companion, "apk_version", lambda apk: None)
+    with pytest.raises(UpdateError):
+        updater.update_companions("adb", targets)
+    assert len(seen) == 3 and not copies[1].exists()
+
+
+def test_companion_note():
+    ok, blocked = companion.InstallReport(ok=True), companion.InstallReport(error="Your device blocked the install.")
+    assert updater.companion_note([]) == ""
+    assert updater.companion_note([("Pixel 8", ok)]) == "The companion app on Pixel 8 is updated too."
+    assert updater.companion_note([("A", ok), ("B", ok), ("C", ok)]) == \
+        "The companion apps on A, B and C are updated too."
+    assert updater.companion_note([("Pixel 8", ok), ("Redmi", blocked)]) == (
+        "The companion app on Pixel 8 is updated too. Updating the companion app on Redmi didn't finish: "
+        "Your device blocked the install. scrcpy4Frame tries again the next time it starts.")
+
+
 class _Quit:
     def __init__(self):
         self.calls = 0
@@ -181,6 +243,35 @@ def test_updater_reports_failures_and_can_try_again(upd, monkeypatch):
     monkeypatch.setattr(updater, "install_bundle", lambda bundle: None)
     upd.install()
     assert upd.view()["state"] == "installed" and upd.view()["error"] == ""
+
+
+def test_updater_updates_older_companions_once_installed(upd, monkeypatch):
+    targets = [CompanionTarget("Pixel 8", "192.168.1.23:41235", 35)]
+    upd.adb, upd.companions = "adb", lambda: targets
+    states, calls = [], []
+    upd.changed.connect(lambda: states.append(upd.view()["state"]))
+    monkeypatch.setattr(updater, "download", lambda release, target, progress, cancelled: target)
+    monkeypatch.setattr(updater, "install_bundle", lambda bundle: None)
+    monkeypatch.setattr(updater, "update_companions", lambda adb, found: calls.append((adb, found)) or [
+        ("Pixel 8", companion.InstallReport(ok=True))])
+    upd.check()
+    upd.install()
+    assert calls == [("adb", targets)] and states[-3:] == ["installing", "companion", "installed"]
+    view = upd.view()
+    assert view["note"] == "The companion app on Pixel 8 is updated too." and view["banner"] and not view["error"]
+
+    def broken(adb, found):
+        raise UpdateError("cp: No such file or directory")
+    monkeypatch.setattr(updater, "update_companions", broken)
+    upd.state = "idle"
+    upd.install()
+    view = upd.view()                                   # the app update still went through
+    assert view["state"] == "installed" and not view["error"] and "checks again" in view["note"]
+
+    upd.companions = lambda: []                         # no connected device with the companion
+    upd.state = "idle"
+    upd.install()
+    assert states[-2:] == ["installing", "installed"] and upd.view()["note"] == ""
 
 
 def test_no_check_outside_the_flatpak(qt, monkeypatch):
