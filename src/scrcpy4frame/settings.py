@@ -17,7 +17,7 @@ class Settings:
     max_fps: int = 60
     bitrate_mbps: int = 12
     video_codec: str = "h264"
-    audio_buffer_ms: int = 50              # scrcpy --audio-buffer for audio casting: 20 | 30 | 40 | 50
+    audio_buffer_ms: int = 100             # scrcpy --audio-buffer for audio casting: one of AUDIO_BUFFERS_MS
     turn_screen_off: bool = False          # blank the phone's display. The phone keeps running.
     keep_active: bool = True
     panel_size: str = "medium"             # small | medium | large: the VR panel's size when it opens
@@ -34,6 +34,8 @@ class Settings:
 # Renamed keys, old -> new. Old values are migrated on load.
 RENAMED = {"suppress_while_mirroring": "suppress_while_visible"}
 
+AUDIO_BUFFERS_MS = (50, 100, 150, 200)   # the choices in Settings › Audio
+
 
 class SettingsStore:
     def __init__(self, path: Path):
@@ -46,6 +48,8 @@ class SettingsStore:
                     if old in raw and new not in raw:
                         raw[new] = raw.pop(old)
                 known = {f.name: f for f in fields(Settings)}
+                if raw.get("audio_buffer_ms") not in AUDIO_BUFFERS_MS:
+                    raw.pop("audio_buffer_ms", None)  # a buffer no longer offered: back to the default
                 self.value = Settings(**{k: v for k, v in raw.items() if k in known})
             except (OSError, ValueError, TypeError) as exc:
                 log.error("could not read %s: %s", path, exc)

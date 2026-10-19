@@ -287,12 +287,20 @@ def test_settings_store_types(tmp_path):
     store = SettingsStore(tmp_path / "settings.json")
     store.update("bitrate_mbps", "8")
     store.update("keep_active", 0)
-    assert store.value.audio_buffer_ms == 50
-    store.update("audio_buffer_ms", 20.0)                   # QML numbers can arrive as floats
+    assert store.value.audio_buffer_ms == 100
+    store.update("audio_buffer_ms", 200.0)                   # QML numbers can arrive as floats
     assert not store.update("nope", 1)
     raw = json.loads((tmp_path / "settings.json").read_text())
-    assert raw["bitrate_mbps"] == 8 and raw["keep_active"] is False and raw["audio_buffer_ms"] == 20
+    assert raw["bitrate_mbps"] == 8 and raw["keep_active"] is False and raw["audio_buffer_ms"] == 200
     assert SettingsStore(tmp_path / "settings.json").value.bitrate_mbps == 8
+
+
+def test_audio_buffer_no_longer_offered_goes_back_to_the_default(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({"audio_buffer_ms": 20, "bitrate_mbps": 8}))
+    value = SettingsStore(tmp_path / "settings.json").value
+    assert value.audio_buffer_ms == 100 and value.bitrate_mbps == 8
+    (tmp_path / "settings.json").write_text(json.dumps({"audio_buffer_ms": 150}))
+    assert SettingsStore(tmp_path / "settings.json").value.audio_buffer_ms == 150
 
 
 def test_renamed_settings_keep_their_value(tmp_path):

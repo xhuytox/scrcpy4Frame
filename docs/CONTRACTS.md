@@ -274,8 +274,8 @@ A native helper that shows the device as a SteamVR overlay panel shaped like its
    4. Audio casting is off at every launch and never saved. Home's "Audio casting" button runs the
       official client audio-only (`scrcpy --no-window --no-video --no-control --require-audio …`,
       Android 11+) from the panel's first frame, and stops it when switched off. The phone is silent
-      while it runs. Its `--audio-buffer` is Settings › Audio › "Audio buffer" (20, 30, 40 or 50 ms;
-      50 by default); changing it while casting stops the client and starts it again on the new buffer. In window mode scrcpy itself gets `--no-audio`, and the audio client starts once
+      while it runs. Its `--audio-buffer` is Settings › Audio › "Audio buffer" (50, 100, 150 or 200 ms;
+      100 by default; a saved buffer no longer offered goes back to 100); changing it while casting stops the client and starts it again on the new buffer. In window mode scrcpy itself gets `--no-audio`, and the audio client starts once
       the window's `[server]` log appears, so the two never push scrcpy's server at the same time.
 2. **`vr-mirror` (host)** connects to `127.0.0.1:<port>`. The sandbox shares the host's network
    namespace, so the adb forward is reachable from the host.

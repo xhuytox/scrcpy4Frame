@@ -620,27 +620,27 @@ def test_audio_buffer_setting_restarts_casting_with_the_new_buffer(vr_audio):
     FakeVrSession.instances[-1].event.emit("first_frame", {})
     controller.setAudioCasting(True)
     first = FakeAudioCast.instances[-1]
-    assert first.buffer_ms == 50                            # the default
+    assert first.buffer_ms == 100                           # the default
     first.go_live()
-    controller.setSetting("audio_buffer_ms", 50)            # same value: keeps casting
+    controller.setSetting("audio_buffer_ms", 100)           # same value: keeps casting
     assert not first.is_stopping
-    controller.setSetting("audio_buffer_ms", 20)
+    controller.setSetting("audio_buffer_ms", 200)
     assert first.is_stopping and controller.mirrorStatus["audioBusy"] is True
     first.exit()                                            # casts again once the old client has exited
     assert len(FakeAudioCast.instances) == 2
     second = FakeAudioCast.instances[-1]
-    assert second.running and second.buffer_ms == 20
+    assert second.running and second.buffer_ms == 200
     assert controller.mirrorStatus["audioBusy"] is True
 
 
 def test_audio_buffer_setting_waits_for_casting(vr_audio):
     controller = vr_audio
-    controller.setSetting("audio_buffer_ms", 30)            # not casting: nothing to restart
+    controller.setSetting("audio_buffer_ms", 150)           # not casting: nothing to restart
     assert not FakeAudioCast.instances
     controller.mirror(_connected_phone(controller))
     FakeVrSession.instances[-1].event.emit("first_frame", {})
     controller.setAudioCasting(True)
-    assert FakeAudioCast.instances[-1].buffer_ms == 30
+    assert FakeAudioCast.instances[-1].buffer_ms == 150
 
 
 def test_audio_casting_that_stops_by_itself_shows_as_off(vr_audio):
