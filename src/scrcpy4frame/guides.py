@@ -18,6 +18,12 @@ def brands() -> list[dict]:
     return list(_data()["brands"])
 
 
+def text(name: str, brand: str) -> str:
+    """One brand-specific phrase from the guides' vars."""
+    options = _data()["vars"][name]
+    return options.get(brand, options["other"])
+
+
 def guide(step: str, brand: str, ssid: str = "") -> dict:
     data = _data()
     entry = data["steps"].get(step)

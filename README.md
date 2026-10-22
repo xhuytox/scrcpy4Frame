@@ -2,7 +2,7 @@
 
 > NOTICE: A large portion of this project is AI generated.
 
-Mirror and control your Android device (phone or tablet) on the **Valve Steam Frame**, over Wi-Fi, using
+Mirror and control your Android device (phone or tablet) on the **Valve Steam Frame**, over Wi-Fi or USB, using
 [scrcpy](https://github.com/Genymobile/scrcpy).
 
 #### How to Setup (Video)
@@ -26,18 +26,28 @@ flatpak uninstall --user io.github.xhuytox.Scrcpy4Frame
 ```
 
 ## Setup
-** On the Android device 
-- Turn on Developer options (tap Build number 7×)
+The app asks how you want to set up your device: **Wireless** or **Wired**.
+
+** Wireless (Android 11 or newer)
+- On the device, turn on Developer options (tap Build number 7×)
 - Turn on Wireless debugging
 - Tap "Pair device with pairing code"
-
-** On the Frame
-- Type the 6-digit pairing code on the Frame 
+- Type the 6-digit pairing code on the Frame
 - (optional) Install companion app
 - (optional) Add Quick Settings tile for 1-tap wireless reconnect
 
-**Android 5–10:** a one-time cable setup. Plug the device into the Frame's USB-C port and tap
-"Allow". The app then reconnects over Wi-Fi. This lasts until the device restarts.
+** Wired (Android 5 or newer)
+- On the device, turn on Developer options (tap Build number 7×)
+- Turn on USB debugging
+- Plug the device into the Frame's USB-C port with a data cable
+- On the device, tap the USB notification and set "USB controlled by" to "This device" (needed each time
+  you plug it in, or the Frame can't see the device). Confirmed on Samsung and Pixel; other brands may name
+  it differently or not have it.
+- Tap "Allow" on the device (tick "Always allow from this computer")
+- (optional) Install companion app
+
+Once set up, a device uses the cable when it's plugged in and Wi-Fi when it isn't. A Wired device gets
+Wi-Fi on its own when it's on the same network as the Frame.
 
 ## Building
 

@@ -8,6 +8,12 @@
     {"id": "other", "label": "Another brand"}
   ],
   "vars": {
+    "usbControl": {
+      "pixel": "Set \"USB controlled by\" to \"This device\".",
+      "samsung": "Set \"USB controlled by\" to \"This device\".",
+      "motorola": "Set \"USB controlled by\" to \"This device\".",
+      "other": "If you see \"USB controlled by\", choose \"This device\"."
+    },
     "buildNumber": {
       "pixel": "Settings › About phone (or About tablet) › Build number",
       "samsung": "Settings › About phone (or About tablet) › Software information › Build number",
@@ -150,9 +156,11 @@
       "title": "Plug your device into the Frame",
       "lines": [
         "Connect the device to the Frame's USB-C port.",
+        "On the device, pull down notifications and tap the USB notification. {usbControl} Do this each time you plug it in.",
         "If the device asks what the USB connection is for, choose \"File transfer\"."
       ],
       "help": [
+        "Tap the device's USB notification. {usbControl} It goes back to the default each time the cable is plugged in.",
         "Try another cable. Many cables only charge.",
         "On the device, pull down notifications, tap the USB notification and choose \"File transfer\".",
         "Turn USB debugging off and on again in Developer options."
@@ -174,16 +182,9 @@
       ],
       "command": "echo 'SUBSYSTEM==\"usb\", ENV{ID_USB_INTERFACES}==\"*:ff4201:*\", TAG+=\"uaccess\"' | sudo tee /etc/udev/rules.d/51-scrcpy4frame-adb.rules && sudo udevadm control --reload && sudo udevadm trigger"
     },
-    "usb_tcpip": {
-      "title": "Switching to Wi-Fi",
-      "lines": ["Your device is connected. We're switching it to Wi-Fi mode so you won't need the cable."]
-    },
-    "usb_unplug": {
-      "title": "Unplug the cable",
-      "lines": [
-        "Your device now connects over Wi-Fi. You can unplug the cable.",
-        "This lasts until the device restarts. After a restart, plug it in once more."
-      ]
+    "usb_pick": {
+      "title": "Which device?",
+      "lines": ["Pick the device to set up, or plug in the one you want."]
     },
     "reenable": {
       "title": "Turn Wireless debugging back on",

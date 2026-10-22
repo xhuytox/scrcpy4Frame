@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, replace
@@ -10,18 +12,18 @@ from dataclasses import asdict, dataclass, replace
 from PySide6.QtCore import (Property, QObject, QProcess, QProcessEnvironment, QTimer, Signal,
                             Slot)
 
-from . import (__version__, audiocast, companion, guides, netinfo, paths, phonechecks, screencontrol,
-               vrmirror, wake)
-from .adb import TCPIP_PORT, Adb, AdbServer, DeviceEntry, DeviceInfo, PairResult, make_env
+from . import (__version__, audiocast, companion, guides, handoff, netinfo, paths, phonechecks,
+               screencontrol, vrmirror, wake)
+from .adb import TCPIP_PORT, Adb, AdbServer, DeviceEntry, DeviceInfo, PairResult, is_tcp_serial, make_env
 from .companion_link import CompanionLink
-from .devices import TCPIP, WIRELESS, DeviceStore, SavedDevice
-from .discovery import Discovery, Service, same_phone
+from .devices import NONE, SETUP_WIRED, SETUP_WIRELESS, TCPIP, WIRELESS, DeviceStore, SavedDevice
+from .discovery import Discovery, Service, serial_from_guid
 from .mirror import EXIT_DISCONNECTED, build_args, classify
 from .notify.center import NotificationCenter
 from .settings import SettingsStore
 from .tasks import TaskRunner
 from .updater import CompanionTarget, Updater
-from .wizard import Wizard, brand_for_manufacturer
+from .wizard import DONE, TEST, Wizard, brand_for_manufacturer
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +36,24 @@ WAKE_EVERY_MS = 5000
 WAKE_HOLD_S = 30            # a woken companion keeps Wireless debugging on for 60 s without contact
 WOKEN_QUERY_MS = (1000, 3000)   # when to look for a woken device's new adb port over mDNS
 
+HANDOFF_USB_GRACE_S = 10    # after `adb tcpip`, how long a missing USB entry counts as coming back
+HANDOFF_RETRY_S = 60        # how soon to look again for a plugged-in device on the Frame's network
+HANDOFF_QUERY_MS = (1000, 4000, 10_000)     # when to ask mDNS for a device's new Wireless debugging port
+SWITCHING = "Your device is switching connections. Try again in a few seconds."
+WIFI_RESUME_S = 15          # after a USB mirror ends with the cable pulled, how long to wait for Wi-Fi
+WIFI_CHECK_S = 5            # how often to check that a Wi-Fi connection still reaches its device
+WIFI_CHECK_TIMEOUT_S = 5
+WIFI_CHECK_TRIES = 2        # unanswered checks in a row before the connection counts as gone
+BACK_SOON = "Your screen will be back in a few seconds."
+
+# A tcpip device that doesn't answer: either it restarted (Wi-Fi mode is gone) or it's off the Wi-Fi.
+TCPIP_UNREACHABLE = "Plug your device into the Frame or, if it hasn't restarted, put it on the same Wi-Fi."
+USB_HINT_STATES = ("unauthorized", "no permissions")
+# The Frame only becomes the USB host when the device hands control over, and that resets on every plug-in.
+USB_CONTROL_HINT = "Plugged in? On the device, tap the USB notification. "
+
 WIZARD_COMMANDS = {
-    "choose_brand", "next", "back", "show_help", "pick", "not_mine", "use_manual", "use_usb",
+    "choose_setup", "pick_usb", "choose_brand", "next", "back", "show_help", "pick", "not_mine", "use_manual", "use_usb",
     "submit_code", "manual_submit", "retry", "skip", "accept_companion", "decline_companion",
     "add_tile", "check_again", "start_mirror", "finish",
 }
@@ -43,14 +61,37 @@ WIZARD_COMMANDS = {
 
 @dataclass
 class Runtime:
-    serial: str = ""            # adb serial ("ip:port") while connected
-    status: str = "off"         # connected | connecting | ready | off | unreachable | needs_pair
+    wifi_serial: str = ""       # adb serial ("ip:port") while connected over Wi-Fi
+    usb_serial: str = ""        # adb serial while plugged in
+    usb_state: str = ""         # "" | device | unauthorized | no permissions | returning (adbd restarting)
+    status: str = "off"         # connected | connecting | ready | off | unreachable | needs_pair | unplugged
     detail: str = ""
     connecting: bool = False
     next_attempt: float = 0.0
     failures: int = 0
     next_quiet_attempt: float = 0.0     # retry of the last known address while mDNS can't see it
     listener_check: str = ""            # last notable companion.restart_listener() outcome
+    ops: int = 0                        # adb work in flight that `adb tcpip` would cut off
+    handoff: str = ""                   # "" | checking | wireless | tcpip: the Wi-Fi hand-off's phase
+    next_handoff: float = 0.0           # monotonic time the hand-off may start again
+    handoff_gen: int = 0                # bumped on unplug, so late hand-off results are dropped
+    usb_grace_until: float = 0.0        # after `adb tcpip`, a missing USB entry is "returning" until then
+    auth_failed: bool = False           # Wi-Fi refused our key: don't retry until asked or plugged in
+    wifi_checking: bool = False         # checking that the Wi-Fi connection still reaches the device
+    next_wifi_check: float = 0.0
+    wifi_answered_at: float = 0.0       # monotonic start of the last check the device answered
+
+    @property
+    def via(self) -> str:
+        """The connection in use: the cable wins."""
+        if self.usb_state in ("device", "returning"):
+            return "usb"
+        return "wifi" if self.wifi_serial else ""
+
+    @property
+    def serial(self) -> str:
+        # While USB is returning, work goes over Wi-Fi.
+        return self.usb_serial if self.usb_state == "device" else self.wifi_serial
 
 
 @dataclass
@@ -104,13 +145,12 @@ class _WizardActions:
     def usb_poll(self, enabled):
         self.app.set_usb_poll(enabled)
 
-    def usb_tcpip(self, usb_serial):
-        self.app.runner.run(self.app.tcpip_blocking, usb_serial,
-                            on_done=lambda r: self.wizard.tcpip_done(r.ok, r.serial, r.info, r.error, r.message),
-                            on_error=lambda e: self.wizard.tcpip_done(False, message=str(e)))
+    def read_usb_device(self, usb_serial):
+        self.app.runner.run(self.app.adb.device_info, usb_serial, on_done=self.wizard.usb_device_read,
+                            on_error=lambda e: self.wizard.usb_device_read(None))
 
     def save_device(self, device):
-        self.app.device_saved(device)
+        return self.app.device_saved(device)
 
     def start_mirror(self, device_id):
         self.app.set_wizard_active(False)
@@ -159,6 +199,9 @@ class AppController(QObject):
         self._entries: list[DeviceEntry] = []
         self._poll_in_flight = False
         self._usb_poll = False
+        self._usb_identity: dict[str, str] = {}     # USB adb serial -> ro.serialno, when they differ
+        self._identifying: set[str] = set()
+        self._usb_hint = ""                         # state of a plugged-in device that isn't saved
         self.wizard = Wizard(_WizardActions(self), companion_available=paths.companion_apk_path() is not None,
                              on_change=self.wizardChanged.emit)
         bundled = paths.companion_apk_path()
@@ -179,6 +222,11 @@ class AppController(QObject):
         self._audio_supported = True            # the mirrored phone can cast its audio
         self._audio_serial = ""                 # mirrored phone, once its mirror is up
         self._mirror_device = ""
+        self._mirror_serial = ""                # the connection a running mirror uses
+        self._mirror_to_usb = ""                # device whose Wi-Fi mirror is restarting over the cable
+        self._mirror_to_wifi: dict | None = None    # a USB mirror whose cable was pulled, waiting for Wi-Fi
+        self._mirror_stopped = False            # the running mirror was stopped on purpose
+        self._polls = 0                         # `adb devices` results so far
         self._mirror_last_device = ""
         self._mirror_log: deque[str] = deque(maxlen=400)
         self._mirror_message = ""
@@ -256,6 +304,9 @@ class AppController(QObject):
         self.runner.run(netinfo.current, on_done=self._on_net)
 
     def _on_net(self, info: netinfo.NetInfo) -> None:
+        if (info.ipv4, info.ssid) != (self.net.ipv4, self.net.ssid):
+            for rt in self.runtime.values():
+                rt.next_handoff = 0.0       # a new network: try giving plugged-in devices Wi-Fi again
         if info != self.net:
             self.net = info
             self.netChanged.emit()
@@ -289,6 +340,7 @@ class AppController(QObject):
         if entries is None:
             return
         self._entries = entries
+        self._polls += 1
         if self._wizard_active and self._usb_poll:
             self.wizard.usb_devices(entries)
         self._update_statuses()
@@ -301,43 +353,344 @@ class AppController(QObject):
 
     def _connect_service_for(self, device: SavedDevice) -> Service | None:
         for service in self.services:
-            if service.kind == "connect" and same_phone(service.name, device.id):
+            if service.kind == "connect" and device.matches_guid(service.name):
                 return service
         return None
 
+    def _is_usb_of(self, device: SavedDevice, serial: str) -> bool:
+        if serial == device.usb_serial:
+            return True
+        return bool(device.serialno) and device.serialno in (serial, self._usb_identity.get(serial))
+
     def _update_statuses(self) -> None:
         connected = {e.serial for e in self._entries if e.state == "device"}
+        usb = [e for e in self._entries if not e.is_tcp]
         now = time.monotonic()
+        matched: set[str] = set()
         for device in self.store.all():
             rt = self.runtime.setdefault(device.id, Runtime())
-            if rt.serial and rt.serial in connected:
-                rt.status, rt.detail = "connected", ""
-                self._ensure_link(device, rt.serial)
-                continue
-            if rt.status == "connected":                       # the connection just dropped
+            entry = next((e for e in usb if self._is_usb_of(device, e.serial)), None)
+            if entry is not None:
+                matched.add(entry.serial)
+            self._update_usb(rt, entry, now)
+            self._update_wifi(device, rt, connected, now)
+            self._maybe_check_wifi(device, rt, now)
+            self._settle_status(device, rt)
+            if not rt.via:
                 self._stop_link(device.id)
-                stale, rt.serial = rt.serial, ""
-                if stale:
-                    self.runner.run(self.adb.disconnect, stale)
-            if rt.connecting or not self._ready:
-                continue
-            if device.method == WIRELESS:
-                service = self._connect_service_for(device)
-                if service is None:
-                    rt.status = "off"
-                    # mDNS can go quiet (phone asleep, client isolation) but the port only changes
-                    # when Wireless debugging is toggled, so retry the last address.
-                    if device.last_host and device.last_port and now >= rt.next_quiet_attempt:
-                        self._quiet_connect(device)
-                elif rt.status != "needs_pair":
-                    rt.status = "ready"
-                    if now >= rt.next_attempt:
-                        self._auto_connect(device, service.host, service.port)
-            elif now >= rt.next_attempt and device.last_host:
+            elif rt.serial and rt.handoff != "tcpip":
+                # While adbd restarts, a forward would die with it: the link waits for a live connection.
+                self._ensure_link(device, rt.serial)
+            self._maybe_start_handoff(device, rt, now)
+            self._maybe_move_mirror_to_usb(device, rt)
+            self._maybe_resume_over_wifi(device, rt, now)
+        self._check_unknown_usb([e for e in usb if e.serial not in matched])
+        self._emit_devices_if_changed()
+
+    def _update_usb(self, rt: Runtime, entry: DeviceEntry | None, now: float) -> None:
+        restarting = rt.handoff == "tcpip" or now < rt.usb_grace_until
+        if entry is not None and not (entry.state == "offline" and restarting):
+            if entry.state == "device" and rt.usb_state != "device":
+                rt.auth_failed = False          # plugged in: worth trying Wi-Fi again
+            rt.usb_serial, rt.usb_state = entry.serial, entry.state
+        elif (entry is not None or rt.usb_serial) and restarting:
+            rt.usb_serial = rt.usb_serial or entry.serial
+            rt.usb_state = "returning"      # `adb tcpip` restarts adbd, which drops USB for a moment
+        elif rt.usb_serial or rt.usb_state:
+            rt.usb_serial, rt.usb_state = "", ""
+            # Unplugged: drop any hand-off still running, and try again on the next plug-in.
+            rt.handoff, rt.next_handoff, rt.handoff_gen = "", 0.0, rt.handoff_gen + 1
+
+    def _update_wifi(self, device: SavedDevice, rt: Runtime, connected: set[str], now: float) -> None:
+        if rt.wifi_serial and rt.wifi_serial in connected:
+            return
+        if rt.wifi_serial:                                  # the Wi-Fi connection just dropped
+            stale, rt.wifi_serial = rt.wifi_serial, ""
+            self.runner.run(self.adb.disconnect, stale)
+        if rt.connecting or not self._ready:
+            return
+        on_usb = rt.via == "usb"
+        if device.method == WIRELESS:
+            service = self._connect_service_for(device)
+            if service is None:
+                rt.status = "off"
+                # mDNS can go quiet (phone asleep, client isolation) but the port only changes
+                # when Wireless debugging is toggled, so retry the last address.
+                if device.last_host and device.last_port and now >= rt.next_quiet_attempt and not on_usb:
+                    self._quiet_connect(device)
+            elif rt.auth_failed:
+                rt.status = "needs_pair"
+            else:
+                rt.status = "ready"
+                if now >= rt.next_attempt:
+                    self._auto_connect(device, service.host, service.port)
+        elif device.method == TCPIP:
+            if now >= rt.next_attempt and device.last_host and not on_usb:
                 self._auto_connect(device, device.last_host, device.last_port or TCPIP_PORT)
             elif rt.failures:
                 rt.status = "unreachable"
-        self._emit_devices_if_changed()
+
+    def _maybe_check_wifi(self, device: SavedDevice, rt: Runtime, now: float) -> None:
+        """`adb devices` keeps a Wi-Fi connection whose device left the network (Wi-Fi turned off, out of
+        range) as "device" for minutes, so ask the device itself now and then."""
+        if not rt.wifi_serial or rt.wifi_checking or now < rt.next_wifi_check:
+            return
+        rt.wifi_checking, rt.next_wifi_check = True, now + WIFI_CHECK_S
+        serial = rt.wifi_serial
+        # A check that fails to run says nothing about the device: keep the connection.
+        self.runner.run(self._wifi_answers, serial,
+                        on_done=lambda ok: self._wifi_checked(device.id, serial, now, ok),
+                        on_error=lambda e: self._wifi_checked(device.id, serial, now, True))
+
+    # Runs on a worker thread.
+    def _wifi_answers(self, serial: str) -> bool:
+        for _ in range(WIFI_CHECK_TRIES):
+            if self.adb.responds(serial, WIFI_CHECK_TIMEOUT_S):
+                return True
+        # Here, so it's gone before anything reconnects to the same address.
+        self.adb.disconnect(serial)
+        return False
+
+    def _wifi_checked(self, device_id: str, serial: str, started: float, ok: bool) -> None:
+        rt = self.runtime.get(device_id)
+        if rt is None:
+            return
+        rt.wifi_checking = False
+        if rt.wifi_serial != serial:
+            return
+        if ok:
+            rt.wifi_answered_at = started
+            waiting = self._mirror_to_wifi
+            if waiting is not None and waiting["device"] == device_id:
+                self._update_statuses()     # the unplugged mirror waits for this to carry on over Wi-Fi
+            return
+        log.info("%s doesn't answer over Wi-Fi (%s): dropping that connection", device_id, serial)
+        rt.wifi_serial = ""
+        self._update_statuses()
+
+    @staticmethod
+    def _settle_status(device: SavedDevice, rt: Runtime) -> None:
+        """The card's status from both connections."""
+        if rt.via:
+            rt.status, rt.detail = "connected", ""
+            return
+        if rt.status == "connected":
+            rt.status = "connecting" if rt.connecting else "off"
+        if rt.status == "connecting":
+            return
+        if rt.usb_state in USB_HINT_STATES and (device.method == NONE or device.setup == SETUP_WIRED):
+            rt.status, rt.detail = "usb_waiting", ""     # plugged in; the card says what it waits for
+        elif device.method == NONE or (device.setup == SETUP_WIRED and rt.status in ("off", "needs_pair")):
+            # Set up over the cable: plugging in is how to reconnect, never Wireless debugging help.
+            brand = brand_for_manufacturer(device.manufacturer)
+            rt.status, rt.detail = "unplugged", USB_CONTROL_HINT + guides.text("usbControl", brand)
+        elif device.method == TCPIP and rt.status == "unreachable":
+            rt.detail = TCPIP_UNREACHABLE
+
+    # The Wi-Fi hand-off: a plugged-in device that isn't on Wi-Fi gets Wireless debugging turned on, or
+    # failing that `adb tcpip`, so it keeps working once unplugged. Each step runs on the task runner;
+    # its result is dropped if the device was unplugged or forgotten meanwhile.
+
+    def _maybe_start_handoff(self, device: SavedDevice, rt: Runtime, now: float) -> None:
+        if (rt.usb_state != "device" or rt.wifi_serial or rt.connecting or rt.handoff or now < rt.next_handoff
+                or not self.net.online or not self._ready):
+            return
+        if self._wizard_active and self.wizard.step not in (TEST, DONE):
+            return
+        rt.next_handoff, rt.handoff = math.inf, "checking"
+        gen, usb_serial, net = rt.handoff_gen, rt.usb_serial, self.net
+        self.runner.run(handoff.device_address, self.adb, usb_serial, net,
+                        on_done=lambda host: self._handoff_address(device.id, gen, usb_serial, net, host),
+                        on_error=lambda e: self._handoff_address(device.id, gen, usb_serial, net, ""))
+
+    def _handoff_current(self, device_id: str, gen: int, usb_serial: str):
+        device, rt = self.store.get(device_id), self.runtime.get(device_id)
+        if device is None or rt is None or rt.handoff_gen != gen or rt.usb_serial != usb_serial:
+            return None
+        return device, rt
+
+    def _handoff_address(self, device_id: str, gen: int, usb_serial: str, net: netinfo.NetInfo, host: str) -> None:
+        current = self._handoff_current(device_id, gen, usb_serial)
+        if current is None:
+            return
+        device, rt = current
+        if not host:                        # not on the Frame's network (yet)
+            rt.handoff, rt.next_handoff = "", time.monotonic() + HANDOFF_RETRY_S
+            return
+        key = handoff.network_key(net)
+        if device.sdk >= companion.WIRELESS_DEBUGGING_SDK and key not in device.wd_asked_networks:
+            rt.handoff = "wireless"
+            self.devicesChanged.emit()
+            # Its port is announced over mDNS; the browser's own queries are minutes apart.
+            for delay in HANDOFF_QUERY_MS:
+                QTimer.singleShot(delay, lambda: self.discovery.query_now(host))
+            attempt = functools.partial(handoff.try_wireless_debugging,
+                                        find_port=lambda: self._mdns_port(device.serialno, host))
+            self.runner.run(attempt, self.adb, usb_serial, host,
+                            on_done=lambda r: self._handoff_wireless(device_id, gen, usb_serial, key, host, r),
+                            on_error=lambda e: self._handoff_wireless(device_id, gen, usb_serial, key, host,
+                                                                      handoff.HandoffResult(False)))
+        else:
+            self._handoff_tcpip(device, rt, gen, usb_serial, host)
+
+    def _handoff_wireless(self, device_id: str, gen: int, usb_serial: str, key: str, host: str,
+                          result: handoff.HandoffResult) -> None:
+        current = self._handoff_current(device_id, gen, usb_serial)
+        if current is None:
+            return
+        device, rt = current
+        if result.ok:
+            self.store.upsert(replace(
+                device, method=WIRELESS, last_host=result.host, last_port=result.port, wifi_ok=True,
+                app_enabled_wireless_debugging=device.app_enabled_wireless_debugging or result.enabled_wd))
+            rt.wifi_serial, rt.handoff = f"{result.host}:{result.port}", ""
+            self._note_connected(rt.wifi_serial)
+            self.devicesChanged.emit()
+            return
+        if not result.locked and key not in device.wd_asked_networks:  # declined or unanswered: not again here
+            device = self.store.upsert(replace(device, wd_asked_networks=device.wd_asked_networks + [key]))
+        self._handoff_tcpip(device, rt, gen, usb_serial, host)
+
+    def _handoff_tcpip(self, device: SavedDevice, rt: Runtime, gen: int, usb_serial: str, host: str) -> None:
+        # `adb tcpip` restarts adbd on the device, cutting off anything else talking to it.
+        if self._wizard_active:
+            # The wizard's test mirror may start any moment: wait for it to close (set_wizard_active).
+            rt.handoff, rt.next_handoff = "", math.inf
+            self.devicesChanged.emit()
+            return
+        if self._mirror_device == device.id or rt.ops or rt.connecting:
+            rt.handoff, rt.next_handoff = "", time.monotonic() + HANDOFF_RETRY_S
+            self.devicesChanged.emit()
+            return
+        rt.handoff = "tcpip"
+        self._stop_link(device.id)          # its forward dies with adbd; it's made afresh after
+        self.devicesChanged.emit()
+        self.runner.run(handoff.try_tcpip, self.adb, usb_serial, host,
+                        on_done=lambda r: self._handoff_tcpip_done(device.id, gen, r),
+                        on_error=lambda e: self._handoff_tcpip_done(device.id, gen, handoff.HandoffResult(False)))
+
+    def _handoff_tcpip_done(self, device_id: str, gen: int, result: handoff.HandoffResult) -> None:
+        device, rt = self.store.get(device_id), self.runtime.get(device_id)
+        if device is None or rt is None or rt.handoff_gen != gen:
+            return
+        rt.usb_grace_until, rt.handoff = time.monotonic() + HANDOFF_USB_GRACE_S, ""
+        if result.ok:
+            rt.wifi_serial = f"{result.host}:{result.port}"
+            self._note_connected(rt.wifi_serial)
+            method = TCPIP if device.method == NONE else device.method
+            where = {} if method == WIRELESS else {"last_host": result.host, "last_port": result.port}
+            self.store.upsert(replace(device, method=method, wifi_ok=True, **where))
+        self.devicesChanged.emit()
+        self._poll()
+
+    def _mdns_port(self, serialno: str, host: str) -> int:
+        """The device's Wireless debugging port as announced over mDNS, or 0. Called from a worker."""
+        for service in list(self.services):
+            if service.kind == "connect" and service.host == host and (
+                    not serialno or serial_from_guid(service.name) in (serialno, None)):
+                return service.port
+        return 0
+
+    def _switching(self, device_id: str) -> bool:
+        """Refuses adb work while `adb tcpip` restarts adbd on the device, with a banner saying why."""
+        rt = self.runtime.get(device_id)
+        if rt is not None and (rt.handoff == "tcpip" or rt.usb_state == "returning"):
+            self.banner.emit(SWITCHING, "info")
+            return True
+        return False
+
+    def _run_op(self, device_id: str, fn, *args, on_done=None, on_error=None) -> None:
+        """Runs adb work on the device, counted so the hand-off's `adb tcpip` waits for it."""
+        rt = self.runtime.setdefault(device_id, Runtime())
+        rt.ops += 1
+
+        def finished(result):
+            rt.ops -= 1
+            if on_done:
+                on_done(result)
+
+        def failed(exc):
+            rt.ops -= 1
+            if on_error:
+                on_error(exc)
+            else:
+                log.warning("adb work on %s failed: %s", device_id, exc)
+
+        self.runner.run(fn, *args, on_done=finished, on_error=failed)
+
+    def _maybe_move_mirror_to_usb(self, device: SavedDevice, rt: Runtime) -> None:
+        """The cable wins, even over a running mirror: plugged in during a Wi-Fi mirror, it restarts over USB."""
+        if (device.id != self._mirror_device or rt.usb_state != "device" or not is_tcp_serial(self._mirror_serial)
+                or self._mirror_to_usb == device.id):
+            return
+        log.info("%s is plugged in: restarting its mirror over USB", device.id)
+        self._mirror_to_usb = device.id
+        self._announce_switch("Plugged in: switching to USB.")
+        self.stopMirror()
+
+    def _announce_switch(self, banner: str) -> None:
+        """The mirror is about to go away for a few seconds: say why."""
+        self.banner.emit(f"{banner} {BACK_SOON}", "info")
+
+    def _await_wifi(self, device_id: str, message: str, retry_smaller: bool) -> bool:
+        """A USB mirror ended. If its cable was pulled and the device has Wi-Fi, carry on there; the
+        failure message is kept back until that's known."""
+        device, rt = self.store.get(device_id), self.runtime.get(device_id)
+        if self._mirror_stopped or device is None or rt is None or device.method == NONE:
+            return False
+        now = time.monotonic()
+        self._mirror_to_wifi = {"device": device_id, "message": message, "retry": retry_smaller,
+                                "polls": self._polls, "since": now, "until": now + WIFI_RESUME_S}
+        rt.next_wifi_check = 0.0
+        self._poll()
+        return True
+
+    def _maybe_resume_over_wifi(self, device: SavedDevice, rt: Runtime, now: float) -> None:
+        waiting = self._mirror_to_wifi
+        if waiting is None or waiting["device"] != device.id or self._polls <= waiting["polls"]:
+            return                          # decide on a fresh `adb devices`, not the one from before
+        # The device must answer over Wi-Fi after the unplug: it may have left Wi-Fi while plugged in.
+        if rt.via == "wifi" and rt.wifi_answered_at >= waiting["since"]:
+            self._mirror_to_wifi = None
+            log.info("%s was unplugged: continuing its mirror over Wi-Fi", device.id)
+            self._announce_switch("Unplugged: switching to Wi-Fi.")
+            self.mirror(device.id)
+        elif rt.usb_state == "device" or now >= waiting["until"]:
+            # Still plugged in (it dropped for another reason), or no Wi-Fi came: say what happened.
+            self._mirror_to_wifi = None
+            self._mirror_message, self._mirror_retry_smaller = waiting["message"], waiting["retry"]
+            self.mirroringChanged.emit()
+
+    def _resume_over_usb(self, device_id: str) -> bool:
+        """After a mirror stopped by _maybe_move_mirror_to_usb ends: start it again on the cable."""
+        if not device_id or self._mirror_to_usb != device_id:
+            return False
+        self._mirror_to_usb = ""
+        self._mirror_message, self._mirror_retry_smaller = "", False
+        self.mirror(device_id)
+        return True
+
+    def _check_unknown_usb(self, entries: list[DeviceEntry]) -> None:
+        """Plugged-in devices that match no saved device: read their serial number in case the USB
+        serial differs from it, and hint when one waits for Allow or permissions."""
+        self._usb_hint = ""
+        for entry in entries:
+            if entry.state == "device":
+                if entry.serial not in self._usb_identity and entry.serial not in self._identifying:
+                    self._identifying.add(entry.serial)
+                    self.runner.run(self.adb.device_info, entry.serial,
+                                    on_done=lambda info, s=entry.serial: self._usb_identified(s, info),
+                                    on_error=lambda e, s=entry.serial: self._identifying.discard(s))
+            elif entry.state in USB_HINT_STATES:
+                self._usb_hint = entry.state
+
+    def _usb_identified(self, serial: str, info: DeviceInfo) -> None:
+        self._identifying.discard(serial)
+        self._usb_identity[serial] = info.serialno
+        device = next((d for d in self.store.all() if info.serialno and d.serialno == info.serialno), None)
+        if device is not None and device.usb_serial != serial:
+            self.store.upsert(replace(device, usb_serial=serial))
+            self._update_statuses()
 
     def _wake_devices(self) -> None:
         """Ask the companion of each device we can't reach to turn Wireless debugging on.
@@ -353,6 +706,9 @@ class AppController(QObject):
         for device in self.store.all():
             if device.method != WIRELESS or not device.companion or not device.wake_port:
                 continue
+            rt = self.runtime.get(device.id)
+            if rt is not None and rt.via == "usb":
+                continue                    # plugged in: no need for Wi-Fi
             link = self.links.get(device.id)
             if link is not None and link.state == "connected":
                 continue                    # its pings keep Wireless debugging on
@@ -410,22 +766,24 @@ class AppController(QObject):
             return
         rt.connecting = False
         if result.ok and result.info is not None:
-            rt.serial, rt.status, rt.detail, rt.failures = result.serial, "connected", "", 0
+            rt.wifi_serial, rt.detail, rt.failures = result.serial, "", 0
             self._note_connected(result.serial)
             host, _, port = result.serial.rpartition(":")
             info = result.info
-            self.store.upsert(replace(device, last_host=host, last_port=int(port), last_connected_at=time.time(),
-                                      model=info.model or device.model, android_release=info.release or device.android_release,
-                                      sdk=info.sdk or device.sdk))
-            self._ensure_link(self.store.get(device_id) or device, rt.serial)
+            device = self.store.upsert(replace(
+                device, last_host=host, last_port=int(port), last_connected_at=time.time(), wifi_ok=True,
+                model=info.model or device.model, android_release=info.release or device.android_release,
+                sdk=info.sdk or device.sdk))
+            self._ensure_link(device, rt.serial)
         elif result.error == "auth":
-            rt.status = "needs_pair"
+            rt.status, rt.auth_failed = "needs_pair", True
             rt.detail = "Your device no longer trusts the Frame. Pair it again."
         else:
             rt.failures += 1
             rt.next_attempt = time.monotonic() + min(60, 5 * 2 ** min(rt.failures, 4))
             rt.status = "unreachable" if device.method == TCPIP else "ready"
             rt.detail = result.message
+        self._settle_status(device, rt)
         self.devicesChanged.emit()
 
     # Runs on a worker thread.
@@ -441,39 +799,31 @@ class AppController(QObject):
                                   message=f"The device didn't finish connecting ({state or 'offline'}).")
         return ConnectOutcome(True, serial=serial, info=self.adb.device_info(serial))
 
-    # Runs on a worker thread.
-    def tcpip_blocking(self, usb_serial: str) -> ConnectOutcome:
-        info = self.adb.device_info(usb_serial)
-        found = self.adb.wlan_ip(usb_serial)
-        if not found:
-            return ConnectOutcome(False, error="no_wifi")
-        host = found[0]
-        if not self.adb.tcpip(usb_serial, TCPIP_PORT):
-            return ConnectOutcome(False, message="The device refused to switch to Wi-Fi mode.")
-        time.sleep(2)
-        for _ in range(6):
-            if self.adb.connect(host, TCPIP_PORT).ok and self.adb.wait_for_device(f"{host}:{TCPIP_PORT}", 5):
-                return ConnectOutcome(True, serial=f"{host}:{TCPIP_PORT}", info=info)
-            time.sleep(1.5)
-        return ConnectOutcome(False, message=f"Couldn't reach the device at {host} over Wi-Fi. "
-                                             "Is it on the same network as the Frame?")
-
     def _note_connected(self, serial: str) -> None:
         # Treat it as connected until the next `adb devices` poll, or a discovery update in between
         # would mark it disconnected.
         if not any(e.serial == serial and e.state == "device" for e in self._entries):
             self._entries = [e for e in self._entries if e.serial != serial] + [DeviceEntry(serial, "device")]
 
-    def device_saved(self, device: SavedDevice) -> None:
-        self.store.upsert(device)
-        rt = self.runtime.setdefault(device.id, Runtime())
-        rt.serial = f"{device.last_host}:{device.last_port}"
-        self._note_connected(rt.serial)
-        rt.status, rt.detail, rt.failures, rt.connecting = "connected", "", 0, False
-        self._ensure_link(device, rt.serial)
+    def device_saved(self, device: SavedDevice) -> SavedDevice:
+        """Stores a device the wizard just connected, and returns it as stored (maybe under an older id)."""
+        stored = self.store.add(device)
+        rt = self.runtime.setdefault(stored.id, Runtime())
+        if device.usb_serial:
+            rt.usb_serial, rt.usb_state = device.usb_serial, "device"
+            self._note_connected(device.usb_serial)
+        elif device.last_host:
+            rt.wifi_serial = f"{device.last_host}:{device.last_port}"
+            self._note_connected(rt.wifi_serial)
+        rt.detail, rt.failures, rt.connecting = "", 0, False
+        self._settle_status(stored, rt)
+        self._ensure_link(stored, rt.serial)
         self.devicesChanged.emit()
+        return stored
 
     def _ensure_link(self, device: SavedDevice, serial: str) -> None:
+        if not serial:
+            return                  # without -s, adb would pick whichever device it sees
         link = self.links.get(device.id)
         if not device.companion:
             if link:
@@ -531,8 +881,8 @@ class AppController(QObject):
             self.banner.emit(f"The companion app on {name} is updated." if report.ok else
                              companion.update_failure(name, report), "info" if report.ok else "error")
 
-        self.runner.run(companion.update, self.adb, link.serial, paths.companion_apk_path(), latest, device.sdk,
-                        on_done=done, on_error=lambda e: done(
+        self._run_op(device_id, companion.update, self.adb, link.serial, paths.companion_apk_path(), latest,
+                     device.sdk, on_done=done, on_error=lambda e: done(
                             companion.InstallReport(error=f"Installing the companion failed: {e}")))
 
     def _companion_listener_checked(self, device_id: str, outcome: str) -> None:
@@ -592,16 +942,31 @@ class AppController(QObject):
         for device in self.store.all():
             rt = self.runtime.get(device.id, Runtime())
             link = self.links.get(device.id)
+            via = rt.via
+            if device.id == self._mirror_device and self._mirror_serial:
+                via = "wifi" if is_tcp_serial(self._mirror_serial) else "usb"
             out.append({
                 "id": device.id, "name": device.display_name, "model": device.model,
                 "manufacturer": device.manufacturer, "release": device.android_release,
                 "sdk": device.sdk, "method": device.method, "status": rt.status, "detail": rt.detail,
-                "host": rt.serial.rpartition(":")[0] or device.last_host,
+                "setup": device.setup, "via": via,
+                "usbHint": rt.usb_state if rt.usb_state in USB_HINT_STATES else "",
+                "host": "" if via == "usb" else (rt.wifi_serial.rpartition(":")[0] or device.last_host),
                 "companion": device.companion, "companionState": link.state if link else "",
                 "companionNote": self._companion_note(device, rt.listener_check, link.state if link else ""),
                 "qsTile": device.qs_tile, "mirroring": device.id == self._mirror_device,
             })
         return out
+
+    @Property("QVariantList", notify=devicesChanged)
+    def handoffAsking(self) -> list:
+        """Devices whose phone may be asking "Allow wireless debugging on this network?"."""
+        return [device_id for device_id, rt in self.runtime.items() if rt.handoff == "wireless"]
+
+    @Property(str, notify=devicesChanged)
+    def usbHint(self) -> str:
+        """A plugged-in device that isn't saved waits for Allow, or for USB permissions on the Frame."""
+        return "" if self._wizard_active else self._usb_hint
 
     @Property(bool, notify=wizardActiveChanged)
     def wizardActive(self) -> bool:
@@ -678,12 +1043,19 @@ class AppController(QObject):
             self._wizard_active = active
             if not active and self._usb_poll:
                 self.set_usb_poll(False)
+            if not active:
+                for rt in self.runtime.values():    # a hand-off may have waited for the wizard
+                    if rt.next_handoff == math.inf and not rt.handoff:
+                        rt.next_handoff = 0.0
             self.wizardActiveChanged.emit()
 
     @Slot(str, str)
     def startWizard(self, mode: str, device_id: str = "") -> None:
-        exclude = {rt.serial.rpartition(":")[0] for rt in self.runtime.values() if rt.status == "connected"}
-        self.wizard.start(mode, self.store.get(device_id) if device_id else None, self.services, exclude)
+        exclude = {rt.wifi_serial.rpartition(":")[0] for rt in self.runtime.values() if rt.wifi_serial}
+        saved = {d.serialno for d in self.store.all()}
+        known = ({d.usb_serial for d in self.store.all()} | saved
+                 | {usb for usb, serialno in self._usb_identity.items() if serialno in saved}) - {""}
+        self.wizard.start(mode, self.store.get(device_id) if device_id else None, self.services, exclude, known)
         self.set_wizard_active(True)
 
     @Slot()
@@ -714,7 +1086,7 @@ class AppController(QObject):
 
     @Slot(str)
     def mirror(self, device_id: str) -> None:
-        if self.mirroring:
+        if self.mirroring or self._switching(device_id):
             return
         device = self.store.get(device_id)
         rt = self.runtime.get(device_id)
@@ -828,6 +1200,7 @@ class AppController(QObject):
         self._audio_supported = audiocast.supported(device.sdk)
         self._open_screen_control(serial)
         self._mirror_device = self._mirror_last_device = device.id
+        self._mirror_serial, self._mirror_stopped = serial, False
         self._mirror_message, self._mirror_retry_smaller = "", False
         log.info("starting VR panel mirroring of %s (%s)", device.id, serial)
         session.start()
@@ -860,12 +1233,15 @@ class AppController(QObject):
             return
         self._vr_session = None
         self._panel_opening = False
-        self._mirror_device = ""
+        over_usb = not is_tcp_serial(self._mirror_serial)
+        self._mirror_device = self._mirror_serial = ""
         self._mirror_mode = ""
         self._close_screen_control()
         self._close_audio()
         self.mirroringChanged.emit()
         self.devicesChanged.emit()
+        if self._resume_over_usb(device_id):
+            return
         if kind == "vr_unavailable":
             self.banner.emit("The overlay isn't available right now, so the device opens in a window.", "info")
             device, rt = self.store.get(device_id), self.runtime.get(device_id)
@@ -873,9 +1249,13 @@ class AppController(QObject):
                 self._mirror_window(device, rt.serial)
             return
         if kind in ("failed", "disconnected"):
-            self._mirror_message = {
-                "disconnected": "The connection to your device dropped. It may have locked or left the Wi-Fi.",
+            text = {
+                "disconnected": "The connection to your device dropped. It may have locked or "
+                                + ("been unplugged." if over_usb else "left the Wi-Fi."),
             }.get(kind, "The overlay couldn't start.") + (f"\n{message}" if message and kind == "failed" else "")
+            if over_usb and self._await_wifi(device_id, text, False):
+                return
+            self._mirror_message = text
             self.mirroringChanged.emit()
         self._poll()
 
@@ -905,6 +1285,7 @@ class AppController(QObject):
         self._audio_supported = audiocast.supported(device.sdk)
         self._open_screen_control(rt_serial)
         self._mirror_device = self._mirror_last_device = device_id
+        self._mirror_serial, self._mirror_stopped = rt_serial, False
         self._mirror_message, self._mirror_retry_smaller = "", False
         log.info("starting scrcpy: %s", " ".join(args))
         proc.start()
@@ -932,22 +1313,31 @@ class AppController(QObject):
             return
         if status != QProcess.ExitStatus.NormalExit and code == 0:
             code = 1
-        outcome = classify(code, "\n".join(self._mirror_log))
+        over_usb = not is_tcp_serial(self._mirror_serial)
+        outcome = classify(code, "\n".join(self._mirror_log), usb=over_usb)
+        device_id = self._mirror_device
         self._mirror_proc = None
-        self._mirror_device = ""
+        self._mirror_device = self._mirror_serial = ""
         self._mirror_mode = ""
         self._close_screen_control()
         self._close_audio()
         self._max_size_override = None
+        if self._resume_over_usb(device_id):
+            return
         if outcome.kind != "ok":
-            self._mirror_message, self._mirror_retry_smaller = outcome.message, outcome.retry_smaller
             log.warning("scrcpy ended: %s (exit %s)", outcome.kind, code)
+            if over_usb and self._await_wifi(device_id, outcome.message, outcome.retry_smaller):
+                self.mirroringChanged.emit()
+                self.devicesChanged.emit()
+                return
+            self._mirror_message, self._mirror_retry_smaller = outcome.message, outcome.retry_smaller
         self.mirroringChanged.emit()
         self.devicesChanged.emit()
         self._poll()
 
     @Slot()
     def stopMirror(self) -> None:
+        self._mirror_stopped = True
         if self._mirror_proc is not None:
             self._mirror_proc.terminate()
         if self._vr_session is not None:
@@ -999,7 +1389,7 @@ class AppController(QObject):
     @Slot(str)
     def reconnectDevice(self, device_id: str) -> None:
         rt = self.runtime.setdefault(device_id, Runtime())
-        rt.next_attempt, rt.failures = 0.0, 0
+        rt.next_attempt, rt.failures, rt.auth_failed = 0.0, 0, False
         if rt.status == "needs_pair":
             rt.status = "off"
         self._update_statuses()
@@ -1007,6 +1397,8 @@ class AppController(QObject):
     @Slot(str)
     def forgetDevice(self, device_id: str) -> None:
         """Drop everything kept for the device, and uninstall its companion while adb still reaches it."""
+        if self._switching(device_id):
+            return
         device, rt = self.store.get(device_id), self.runtime.pop(device_id, None)
         serial = rt.serial if rt else ""
         uninstall = bool(device and device.companion and rt and rt.status == "connected")
@@ -1029,7 +1421,8 @@ class AppController(QObject):
         # Runs on a worker thread.
         def uninstall_and_turn_off() -> bool:
             ok = companion.uninstall(self.adb, serial)
-            if device.method == WIRELESS:      # even if the uninstall failed: we won't wake it again
+            # Even if the uninstall failed: we won't wake it again.
+            if (device.setup == SETUP_WIRELESS and device.method == WIRELESS) or device.app_enabled_wireless_debugging:
                 companion.turn_off_wireless_debugging(self.adb, serial)
             return ok
 
@@ -1039,6 +1432,7 @@ class AppController(QObject):
                              f"Couldn't uninstall the companion from {device.display_name}. "
                              "Uninstall it on the device.", "info" if ok else "error")
 
+        # Not counted in ops: the device is gone from the list, so no hand-off can start on it.
         self.runner.run(uninstall_and_turn_off, on_done=done, on_error=lambda e: done(False))
 
     @Slot(str, str)
@@ -1050,6 +1444,8 @@ class AppController(QObject):
 
     @Slot(str)
     def installCompanion(self, device_id: str) -> None:
+        if self._switching(device_id):
+            return
         device, rt = self.store.get(device_id), self.runtime.get(device_id)
         apk = paths.companion_apk_path()
         if not device or not rt or rt.status != "connected" or apk is None:
@@ -1066,26 +1462,28 @@ class AppController(QObject):
                              "info" if report.ok else "error")
             self.devicesChanged.emit()
 
-        self.runner.run(companion.install_and_grant, self.adb, rt.serial, apk, device.sdk, on_done=done)
+        self._run_op(device_id, companion.install_and_grant, self.adb, rt.serial, apk, device.sdk, on_done=done)
 
     @Slot(str)
     def removeCompanion(self, device_id: str) -> None:
         device, rt = self.store.get(device_id), self.runtime.get(device_id)
-        if not device:
+        if not device or self._switching(device_id):
             return
         self._stop_link(device_id)
         self.store.upsert(replace(device, companion=False))
         if rt:
             rt.listener_check = ""
         if rt and rt.status == "connected":
-            self.runner.run(companion.uninstall, self.adb, rt.serial,
-                            on_done=lambda ok: self.banner.emit(
-                                "Companion removed." if ok else "Couldn't uninstall the companion.",
-                                "info" if ok else "error"))
+            self._run_op(device_id, companion.uninstall, self.adb, rt.serial,
+                         on_done=lambda ok: self.banner.emit(
+                             "Companion removed." if ok else "Couldn't uninstall the companion.",
+                             "info" if ok else "error"))
         self.devicesChanged.emit()
 
     @Slot(str)
     def addTile(self, device_id: str) -> None:
+        if self._switching(device_id):
+            return
         rt = self.runtime.get(device_id)
         if not rt or rt.status != "connected":
             self.banner.emit("That device isn't ready yet.", "error")
@@ -1099,7 +1497,7 @@ class AppController(QObject):
                              "Your device didn't accept the shortcut.", "info" if ok else "error")
             self.devicesChanged.emit()
 
-        self.runner.run(companion.add_tile, self.adb, rt.serial, on_done=done)
+        self._run_op(device_id, companion.add_tile, self.adb, rt.serial, on_done=done)
 
     @Slot(str, "QVariant")
     def setSetting(self, key: str, value) -> None:

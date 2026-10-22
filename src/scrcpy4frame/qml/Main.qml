@@ -56,7 +56,8 @@ ApplicationWindow {
                     font.weight: Font.Bold
                 }
                 StatusChip {
-                    status: app.network.online ? "ok" : "error"
+                    // Grey, not red: a device can be used over USB with no Wi-Fi at all.
+                    status: app.network.online ? "ok" : "idle"
                     text: app.network.online ? ("Wi-Fi" + (app.network.ssid ? ": " + app.network.ssid : "") + "  ·  " + app.network.ip)
                                              : "Not connected to Wi-Fi"
                 }

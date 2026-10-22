@@ -48,6 +48,7 @@ def setup():
     actions, clock = FakeActions(), Clock()
     wiz = W.Wizard(actions, companion_available=True, clock=clock)
     wiz.start("new")
+    wiz.choose_setup("wireless")
     return wiz, actions, clock
 
 
@@ -77,6 +78,7 @@ def test_happy_path_wireless_with_companion_and_tile(setup):
     wiz.connect_done(True, "192.168.1.23:41235", PIXEL)
     assert wiz.step == W.COMPANION
     assert actions.saved[-1].id == "adb-1A2B3C4D-vWgJpq" and actions.saved[-1].last_port == 41235
+    assert actions.saved[-1].setup == "wireless" and actions.saved[-1].wireless_guid == "adb-1A2B3C4D-vWgJpq"
     assert not wiz.view()["canBack"]
     wiz.accept_companion()
     assert actions.last("install_companion") == ("192.168.1.23:41235", 35)
@@ -220,33 +222,6 @@ def test_manual_entry(setup):
     assert actions.last("connect") == ("192.168.1.23", 41235)
 
 
-def test_usb_path_for_android_10(setup):
-    wiz, actions, _ = setup
-    wiz.start("usb")
-    wiz.choose_brand("samsung")
-    assert wiz.step == W.USB_SETUP
-    wiz.next()
-    assert wiz.step == W.USB_PLUG and actions.last("usb_poll") == (True,)
-    wiz.usb_devices([DeviceEntry("R5CT", "no permissions")])
-    assert wiz.step == W.USB_PERMS
-    wiz.usb_devices([DeviceEntry("R5CT", "unauthorized")])
-    assert wiz.step == W.USB_AUTH
-    wiz.usb_devices([DeviceEntry("R5CT", "device")])
-    assert wiz.step == W.USB_TCPIP and actions.last("usb_tcpip") == ("R5CT",)
-    wiz.tcpip_done(False, error="no_wifi")
-    assert wiz.status == "error" and "Wi-Fi" in wiz.message
-    wiz.retry()
-    wiz.tcpip_done(True, "192.168.1.40:5555", OLD)
-    assert wiz.step == W.USB_UNPLUG and actions.saved[-1].method == "tcpip"
-    wiz.usb_devices([DeviceEntry("R5CT", "device"), DeviceEntry("192.168.1.40:5555", "device")])
-    assert wiz.step == W.USB_UNPLUG
-    wiz.usb_devices([DeviceEntry("192.168.1.40:5555", "device")])
-    assert actions.last("usb_poll") == (False,)
-    assert wiz.step == W.COMPANION              # Android 10 still gets notifications
-    wiz.decline_companion()
-    assert wiz.step == W.TEST                   # no Quick Settings tile on the cable path
-
-
 def test_repair_mode_starts_at_pair_open():
     actions = FakeActions()
     wiz = W.Wizard(actions)
@@ -291,6 +266,119 @@ def test_no_companion_bundle_skips_offer():
 def test_progress_view(setup):
     wiz, _, _ = setup
     view = wiz.view()
-    assert view["progress"] == 0 and view["progressTotal"] == len(W.WIRELESS_ORDER)
+    assert view["progress"] == W.WIRELESS_ORDER.index(W.BRAND) and view["progressTotal"] == len(W.WIRELESS_ORDER)
     to_pair_code(wiz)
     assert wiz.view()["progress"] == W.WIRELESS_ORDER.index(W.PAIR_CODE)
+
+
+def test_first_screen_chooses_the_path():
+    actions = FakeActions()
+    wiz = W.Wizard(actions, companion_available=True, clock=Clock())
+    wiz.start("new")
+    assert wiz.step == W.SETUP and not wiz.view()["canBack"]
+    wiz.choose_setup("wired")
+    assert wiz.step == W.BRAND and wiz.view()["path"] == "wired"
+    assert wiz.view()["progressTotal"] == len(W.WIRED_ORDER)
+    wiz.back()
+    assert wiz.step == W.SETUP
+
+
+def wired_to_plug(wiz, known=None):
+    wiz.start("new", known_usb=known or set())
+    wiz.choose_setup("wired")
+    wiz.choose_brand("samsung")
+    assert wiz.step == W.USB_SETUP
+    wiz.next()
+    assert wiz.step == W.USB_PLUG
+
+
+def test_wired_path_never_touches_wifi(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz)
+    wiz.usb_devices([DeviceEntry("R5CT", "unauthorized")])
+    assert wiz.step == W.USB_AUTH
+    wiz.usb_devices([DeviceEntry("R5CT", "device")])
+    assert actions.last("read_usb_device") == ("R5CT",) and actions.last("usb_poll") == (False,)
+    wiz.usb_device_read(OLD)
+    saved = actions.saved[-1]
+    assert saved.id == "usb-OLD1" and saved.setup == "wired" and saved.method == "none"
+    assert saved.usb_serial == "R5CT" and saved.last_host == ""
+    assert wiz.step == W.COMPANION
+    assert "usb_tcpip" not in actions.names()
+    wiz.accept_companion()
+    assert actions.last("install_companion") == ("R5CT", 29)
+    wiz.companion_done(InstallReport(ok=True))
+    wiz.next()
+    assert wiz.step == W.TEST                   # no Quick Settings tile on the Wired path
+
+
+def test_wired_xiaomi_gets_the_input_check(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz)
+    wiz.usb_devices([DeviceEntry("X1", "device")])
+    wiz.usb_device_read(XIAOMI)
+    assert wiz.step == W.OEM_INPUT and actions.last("check_input") == ("X1",)
+    assert wiz.view()["progress"] == W.WIRED_ORDER.index(W.USB_PLUG)
+
+
+def test_two_new_devices_ask_which_one(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz, known={"SAVED1"})
+    wiz.usb_devices([DeviceEntry("SAVED1", "device"), DeviceEntry("A1", "device", {"model": "Pixel_8"}),
+                     DeviceEntry("B2", "device")])
+    assert wiz.step == W.USB_PICK
+    assert wiz.view()["usbCandidates"] == [{"serial": "A1", "model": "Pixel 8"}, {"serial": "B2", "model": "B2"}]
+    wiz.pick_usb("B2")
+    assert actions.last("read_usb_device") == ("B2",)
+
+
+def test_a_saved_device_alone_is_offered_not_taken(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz, known={"SAVED1"})
+    wiz.usb_devices([DeviceEntry("SAVED1", "device")])      # still on the cable from before
+    assert wiz.step == W.USB_PICK and "read_usb_device" not in actions.names()
+    wiz.usb_devices([DeviceEntry("SAVED1", "device"), DeviceEntry("NEW1", "device")])
+    assert actions.last("read_usb_device") == ("NEW1",)
+
+
+def test_a_saved_device_can_be_picked_to_set_up_again(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz, known={"SAVED1"})
+    wiz.usb_devices([DeviceEntry("SAVED1", "device")])
+    wiz.pick_usb("SAVED1")
+    assert actions.last("read_usb_device") == ("SAVED1",)
+
+
+def test_back_from_the_picker_keeps_watching_usb(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz)
+    wiz.usb_devices([DeviceEntry("A1", "device"), DeviceEntry("B2", "device")])
+    wiz.back()
+    assert wiz.step == W.USB_PLUG and actions.last("usb_poll") == (True,)
+
+
+def test_unreadable_device_asks_to_replug(setup):
+    wiz, actions, _ = setup
+    wired_to_plug(wiz)
+    wiz.usb_devices([DeviceEntry("R5CT", "device")])
+    wiz.usb_device_read(None)
+    assert wiz.step == W.USB_PLUG and wiz.status == "error" and "plug it back in" in wiz.message
+    assert actions.last("usb_poll") == (True,)
+
+
+def test_wizard_keeps_the_device_the_store_returns():
+    actions = FakeActions()
+    actions.save_device = lambda d: (actions.saved.append(d), SavedDevice(id="adb-OLD1-keep", serialno="OLD1"))[1]
+    wiz = W.Wizard(actions, companion_available=True, clock=Clock())
+    wired_to_plug(wiz)
+    wiz.usb_devices([DeviceEntry("R5CT", "device")])
+    wiz.usb_device_read(OLD)
+    assert wiz.ctx.device.id == "adb-OLD1-keep"
+
+
+def test_charge_only_cable_shows_help(setup):        # Review Focus 1
+    wiz, _, clock = setup
+    wired_to_plug(wiz)
+    clock.t += W.HELP_AFTER_S + 1
+    wiz.tick()
+    assert wiz.help

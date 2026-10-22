@@ -82,7 +82,7 @@ Flickable {
             ChoiceRow {
                 topDivider: false
                 label: "Audio buffer"
-                description: "For audio casting. The default, 100 ms, is balanced. The lower you go, the less delay, but the more chance of glitchy audio. 200 ms is best for listening to music without video."
+                description: "For audio casting. The default, 100 ms, is balanced. The lower you go, the less delay, but the more chance of glitchy audio. 50 ms is only recommended over USB. 200 ms is best for listening to music without video."
                 current: settingsPage.s.audio_buffer_ms
                 options: [{ value: 50, label: "50 ms" }, { value: 100, label: "100 ms" },
                           { value: 150, label: "150 ms" }, { value: 200, label: "200 ms" }]

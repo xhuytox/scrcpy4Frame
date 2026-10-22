@@ -18,7 +18,9 @@ Flickable {
         "ready": "Found on Wi-Fi",
         "off": "Wireless debugging is off",
         "unreachable": "Not reachable",
-        "needs_pair": "Needs pairing again"
+        "needs_pair": "Needs pairing again",
+        "unplugged": "Plug your device into the Frame",
+        "usb_waiting": "Plugged in"
     })
 
     ColumnLayout {
@@ -59,7 +61,7 @@ Flickable {
             Text {
                 Layout.fillWidth: true
                 Layout.maximumWidth: 1100
-                text: "See and control your Android device right here in the headset, over Wi-Fi. Setup takes about two minutes, and we'll walk you through every step on the device."
+                text: "See and control your Android device right here in the headset, over Wi-Fi or USB. Setup takes about two minutes, and we'll walk you through every step on the device."
                 color: theme.textDim
                 font.pixelSize: theme.font
                 wrapMode: Text.WordWrap
@@ -71,18 +73,17 @@ Flickable {
                     enabled: app.ready
                     onClicked: app.startWizard("new", "")
                 }
-                BigButton {
-                    text: "Set up with a USB cable"
-                    enabled: app.ready
-                    onClicked: app.startWizard("usb", "")
-                }
             }
-            Text {
+        }
+
+        Card {
+            Layout.fillWidth: true
+            visible: app.usbHint.length > 0
+            highlighted: true
+            UsbHint {
                 Layout.fillWidth: true
-                text: "Android 10 or older? Use the USB cable option."
-                color: theme.textDim
-                font.pixelSize: theme.fontSmall
-                wrapMode: Text.WordWrap
+                waitingFor: app.usbHint
+                allowText: "A device is plugged in. Tap Allow on it to use the cable."
             }
         }
 
@@ -118,7 +119,7 @@ Flickable {
                             Layout.fillWidth: true
                             text: [deviceCard.d.manufacturer,
                                    deviceCard.d.release ? "Android " + deviceCard.d.release : "",
-                                   deviceCard.d.method === "tcpip" ? "cable setup" : "",
+                                   deviceCard.d.via === "usb" ? "USB" : deviceCard.d.via === "wifi" ? "Wi-Fi" : "",
                                    deviceCard.d.host].filter(function (s) { return s }).join("  ·  ")
                             color: theme.textDim
                             font.pixelSize: theme.fontSmall
@@ -151,6 +152,11 @@ Flickable {
                     color: theme.textDim
                     font.pixelSize: theme.fontSmall
                     wrapMode: Text.WordWrap
+                }
+                UsbHint {
+                    Layout.fillWidth: true
+                    waitingFor: deviceCard.d.usbHint || ""
+                    allowText: "Tap Allow on your device to use the cable."
                 }
                 RowLayout {
                     visible: deviceCard.d.companion
@@ -312,6 +318,7 @@ Flickable {
                     }
                     BigButton {
                         visible: deviceCard.d.status === "off" && deviceCard.d.method === "wireless"
+                                 && deviceCard.d.setup === "wireless"
                         text: deviceCard.showReenable ? "Hide help" : "How do I turn it on?"
                         onClicked: deviceCard.showReenable = !deviceCard.showReenable
                     }
@@ -319,11 +326,6 @@ Flickable {
                         visible: deviceCard.d.status === "needs_pair"
                         text: "Pair again"
                         onClicked: app.startWizard("repair", deviceCard.d.id)
-                    }
-                    BigButton {
-                        visible: deviceCard.d.status === "unreachable" && deviceCard.d.method === "tcpip"
-                        text: "Reconnect with cable"
-                        onClicked: app.startWizard("usb", "")
                     }
                     BigButton {
                         visible: deviceCard.d.status === "ready" || deviceCard.d.status === "unreachable"
@@ -379,7 +381,7 @@ Flickable {
                         }
                     }
                     OptionRow {
-                        visible: deviceCard.d.method === "wireless"
+                        visible: deviceCard.d.method === "wireless" && deviceCard.d.setup === "wireless"
                         topDivider: companionOption.visible || tileOption.visible
                         glyph: "link"
                         title: "Pairing"

@@ -5,7 +5,7 @@ from scrcpy4frame import wizard as W
 
 WIZARD_STEPS = [W.DEVOPTS, W.WIRELESS_ON, W.PICK_PHONE, W.PAIR_OPEN, W.PAIR_CODE, W.MANUAL,
                 W.CONNECTING, W.OEM_INPUT, W.COMPANION, W.TILE, W.TILE_MANUAL, W.TEST,
-                W.USB_SETUP, W.USB_PLUG, W.USB_AUTH, W.USB_PERMS, W.USB_TCPIP, W.USB_UNPLUG, "reenable"]
+                W.USB_SETUP, W.USB_PLUG, W.USB_AUTH, W.USB_PERMS, W.USB_PICK, "reenable"]
 
 
 @pytest.mark.parametrize("brand", [b["id"] for b in guides.brands()])
@@ -25,3 +25,18 @@ def test_brand_specific_paths():
     # Step 3 is skipped when Wireless debugging is already on, and re-pairing starts here.
     assert "Additional settings" in guides.guide(W.PAIR_OPEN, "xiaomi")["lines"][0]
     assert "uaccess" in guides.guide(W.USB_PERMS, "pixel")["command"]
+
+
+@pytest.mark.parametrize("brand", ["samsung", "pixel", "motorola"])
+def test_plugging_in_says_to_let_the_device_control_usb(brand):
+    # The Frame only becomes the USB host when the device asks for it, on every plug-in.
+    lines = " ".join(guides.guide(W.USB_PLUG, brand)["lines"])
+    assert 'Set "USB controlled by" to "This device".' in lines
+
+
+@pytest.mark.parametrize("brand", ["xiaomi", "oneplus", "other"])
+def test_unchecked_brands_get_softer_usb_control_wording(brand):
+    # Not confirmed that these brands have the setting.
+    lines = " ".join(guides.guide(W.USB_PLUG, brand)["lines"])
+    assert 'If you see "USB controlled by", choose "This device".' in lines
+    assert guides.text("usbControl", brand) == 'If you see "USB controlled by", choose "This device".'

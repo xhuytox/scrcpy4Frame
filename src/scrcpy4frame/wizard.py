@@ -11,11 +11,12 @@ from typing import Callable, Protocol
 
 from . import companion as companion_mod
 from .adb import DeviceEntry, DeviceInfo, PairResult, TCPIP_PORT
-from .devices import TCPIP, WIRELESS, SavedDevice
+from .devices import NONE, SETUP_WIRED, SETUP_WIRELESS, WIRELESS, SavedDevice
 from .discovery import Service, same_phone
 from .phonechecks import needs_input_check
 
 # Steps
+SETUP = "setup"
 BRAND = "brand"
 DEVOPTS = "devopts"
 WIRELESS_ON = "wireless"
@@ -34,16 +35,20 @@ USB_SETUP = "usb_setup"
 USB_PLUG = "usb_plug"
 USB_AUTH = "usb_auth"
 USB_PERMS = "usb_perms"
-USB_TCPIP = "usb_tcpip"
-USB_UNPLUG = "usb_unplug"
+USB_PICK = "usb_pick"
 
-WIRELESS_ORDER = [BRAND, DEVOPTS, WIRELESS_ON, PAIR_OPEN, PAIR_CODE, CONNECTING, COMPANION, TILE, TEST]
-USB_ORDER = [BRAND, USB_SETUP, USB_PLUG, USB_TCPIP, USB_UNPLUG, COMPANION, TEST]
+# Paths, picked on the first screen.
+PATH_WIRELESS = "wireless"
+PATH_WIRED = "wired"
+
+WIRELESS_ORDER = [SETUP, BRAND, DEVOPTS, WIRELESS_ON, PAIR_OPEN, PAIR_CODE, CONNECTING, COMPANION, TILE, TEST]
+WIRED_ORDER = [SETUP, BRAND, USB_SETUP, USB_PLUG, COMPANION, TEST]
 _PROGRESS_ALIAS = {PICK_PHONE: WIRELESS_ON, MANUAL: PAIR_CODE, OEM_INPUT: CONNECTING,
-                   TILE_MANUAL: TILE, USB_AUTH: USB_PLUG, USB_PERMS: USB_PLUG, DONE: TEST}
+                   TILE_MANUAL: TILE, USB_AUTH: USB_PLUG, USB_PERMS: USB_PLUG, USB_PICK: USB_PLUG, DONE: TEST}
+_USB_WAITING = (USB_PLUG, USB_AUTH, USB_PERMS, USB_PICK)
 # _TRANSIENT steps are never pushed to history. _NO_BACK steps have Back disabled.
-_TRANSIENT = {CONNECTING, OEM_INPUT, USB_TCPIP, USB_UNPLUG, DONE}
-_NO_BACK = _TRANSIENT | {BRAND, TEST}
+_TRANSIENT = {CONNECTING, OEM_INPUT, DONE}
+_NO_BACK = _TRANSIENT | {SETUP, TEST}
 
 HELP_AFTER_S = 45
 CONNECT_WAIT_S = 20
@@ -73,15 +78,15 @@ class Actions(Protocol):
     def add_tile(self, serial: str) -> None: ...
     def check_tile(self, serial: str) -> None: ...
     def usb_poll(self, enabled: bool) -> None: ...
-    def usb_tcpip(self, usb_serial: str) -> None: ...
-    def save_device(self, device: SavedDevice) -> None: ...
+    def read_usb_device(self, usb_serial: str) -> None: ...
+    def save_device(self, device: SavedDevice) -> SavedDevice | None: ...
     def start_mirror(self, device_id: str) -> None: ...
     def finish(self, device_id: str) -> None: ...
 
 
 @dataclass
 class Context:
-    path: str = "wireless"                  # wireless | usb
+    path: str = PATH_WIRELESS
     brand: str = ""
     target_host: str = ""
     excluded_hosts: set[str] = field(default_factory=set)
@@ -95,6 +100,8 @@ class Context:
     device: SavedDevice | None = None
     usb_serial: str = ""
     usb_state: str = ""
+    usb_candidates: list[DeviceEntry] = field(default_factory=list)
+    known_usb: set[str] = field(default_factory=set)    # USB serials of saved devices
     companion_steps: dict[str, str] = field(default_factory=dict)
 
 
@@ -111,7 +118,7 @@ class Wizard:
 
     def reset(self) -> None:
         self.ctx = Context()
-        self.step = BRAND
+        self.step = SETUP
         self.status = "idle"            # idle | waiting | working | ok | error
         self.message = ""
         self.help = False
@@ -136,16 +143,21 @@ class Wizard:
     def _save_device(self, **changes) -> None:
         if self.ctx.device is None:
             return
-        self.ctx.device = replace(self.ctx.device, **changes) if changes else self.ctx.device
-        self.actions.save_device(self.ctx.device)
+        self._store(replace(self.ctx.device, **changes) if changes else self.ctx.device)
+
+    def _store(self, device: SavedDevice) -> None:
+        # The store may keep the phone under an older id.
+        self.ctx.device = self.actions.save_device(device) or device
 
     def start(self, mode: str = "new", device: SavedDevice | None = None,
-              services: list[Service] | None = None, exclude_hosts: set[str] | None = None) -> None:
-        """mode: "new" (wireless pairing), "usb" (cable setup) or "repair" (pair a saved phone again)."""
+              services: list[Service] | None = None, exclude_hosts: set[str] | None = None,
+              known_usb: set[str] | None = None) -> None:
+        """mode: "new" (asks Wireless or Wired first) or "repair" (pair a saved phone again)."""
         self.reset()
         if services is not None:
             self.services = list(services)
         self.ctx.excluded_hosts = set(exclude_hosts or ())
+        self.ctx.known_usb = set(known_usb or ())
         if mode == "repair" and device is not None:
             self.ctx.brand = brand_for_manufacturer(device.manufacturer)
             self.ctx.target_host = device.last_host
@@ -153,13 +165,16 @@ class Wizard:
             self.step = PAIR_OPEN
             self.status = "waiting"
             self._scan_pair_open()
-        elif mode == "usb":
-            self.ctx.path = "usb"
+        self._changed()
+
+    def choose_setup(self, path: str) -> None:
+        self.ctx.path = path if path in (PATH_WIRELESS, PATH_WIRED) else PATH_WIRELESS
+        self._goto(BRAND)
         self._changed()
 
     def choose_brand(self, brand: str) -> None:
         self.ctx.brand = brand if brand in BRANDS else "other"
-        if self.ctx.path == "usb":
+        if self.ctx.path == PATH_WIRED:
             self._goto(USB_SETUP)
         else:
             self._goto(DEVOPTS)
@@ -186,9 +201,9 @@ class Wizard:
             self.history.pop()
         if self.busy or self.step in _NO_BACK or not self.history:
             return
-        if self.step in (USB_PLUG, USB_AUTH, USB_PERMS):
-            self.actions.usb_poll(False)
         previous = self.history.pop()
+        if self.step in _USB_WAITING:
+            self.actions.usb_poll(previous in _USB_WAITING)     # keep watching when going back to plug in
         self.step = previous
         self.status = "waiting" if previous in (WIRELESS_ON, PAIR_OPEN, USB_PLUG) else "idle"
         self.message = ""
@@ -227,7 +242,7 @@ class Wizard:
         self._changed()
 
     def use_usb(self) -> None:
-        self.ctx.path = "usb"
+        self.ctx.path = PATH_WIRED
         self._goto(USB_SETUP)
         self._changed()
 
@@ -277,11 +292,6 @@ class Wizard:
         elif self.step == COMPANION:
             self.accept_companion()
             return
-        elif self.step == USB_TCPIP and self.ctx.usb_serial:
-            self._start_tcpip()
-        elif self.step == USB_UNPLUG:
-            self._goto(USB_PLUG, "waiting")
-            self.actions.usb_poll(True)
         self._changed()
 
     def skip(self) -> None:
@@ -413,7 +423,7 @@ class Wizard:
         self.busy = False
         if ok and info is not None:
             self.ctx.serial = serial
-            self._connected(info, WIRELESS, self.ctx.guid or f"wireless-{info.serialno}")
+            self._connected(info, PATH_WIRELESS, self.ctx.guid or f"wireless-{info.serialno}")
         elif error == "auth":
             self._goto(PAIR_OPEN, "waiting",
                        "Your device didn't accept the Frame's key. Let's pair again: tap \"Pair "
@@ -462,47 +472,51 @@ class Wizard:
         self._changed()
 
     def usb_devices(self, entries: list[DeviceEntry]) -> None:
+        if self.step not in _USB_WAITING or self.busy:
+            return
         usb = [e for e in entries if not e.is_tcp]
-        if self.step in (USB_PLUG, USB_AUTH, USB_PERMS):
-            ready = [e for e in usb if e.state == "device"]
-            if ready:
-                self.ctx.usb_serial = ready[0].serial
-                self._goto(USB_TCPIP)
-                self._start_tcpip()
-            elif any(e.state == "unauthorized" for e in usb):
-                if self.step != USB_AUTH:
-                    self._goto(USB_AUTH, "waiting")
-            elif any(e.state == "no permissions" for e in usb):
-                if self.step != USB_PERMS:
-                    self._goto(USB_PERMS, "waiting")
-            elif self.step != USB_PLUG:
-                self._goto(USB_PLUG, "waiting")
-            self.ctx.usb_state = usb[0].state if usb else ""
-        elif self.step == USB_UNPLUG:
-            still_plugged = any(e.serial == self.ctx.usb_serial for e in usb)
-            tcp_ok = any(e.serial == self.ctx.serial and e.state == "device" for e in entries)
-            if not still_plugged and tcp_ok:
-                self.actions.usb_poll(False)
-                self._enter_companion()
-            elif not still_plugged and not tcp_ok:
-                self.status = "error"
-                self.message = ("The Wi-Fi connection dropped when the cable was unplugged. Plug "
-                                "the device back in and tap Try again.")
+        ready = [e for e in usb if e.state == "device"]
+        # A saved device may still be on the cable from before: offer it, but don't take it unasked.
+        unknown = [e for e in ready if e.serial not in self.ctx.known_usb]
+        if len(unknown) == 1:
+            self._read_usb(unknown[0].serial)
+        elif ready:
+            self.ctx.usb_candidates = unknown or ready
+            if self.step != USB_PICK:
+                self._goto(USB_PICK)
+        elif any(e.state == "unauthorized" for e in usb):
+            if self.step != USB_AUTH:
+                self._goto(USB_AUTH, "waiting")
+        elif any(e.state == "no permissions" for e in usb):
+            if self.step != USB_PERMS:
+                self._goto(USB_PERMS, "waiting")
+        elif self.step != USB_PLUG:
+            self._goto(USB_PLUG, "waiting", record=False)
+        self.ctx.usb_state = usb[0].state if usb else ""
         self._changed()
 
-    def tcpip_done(self, ok: bool, serial: str = "", info: DeviceInfo | None = None,
-                   error: str = "", message: str = "") -> None:
+    def pick_usb(self, serial: str) -> None:
+        if self.step == USB_PICK and any(e.serial == serial for e in self.ctx.usb_candidates):
+            self._read_usb(serial)
+            self._changed()
+
+    def usb_device_read(self, info: DeviceInfo | None) -> None:
         self.busy = False
-        if ok and info is not None:
-            self.ctx.serial = serial
-            self._connected(info, TCPIP, f"tcpip-{info.serialno or serial}")
-        elif error == "no_wifi":
-            self.status = "error"
-            self.message = "Your device isn't on Wi-Fi. Connect it to the same Wi-Fi as the Frame, then tap Try again."
+        if info is None or not (info.serialno or info.model):
+            self._goto(USB_PLUG, "error", "Couldn't read your device. Unplug it, plug it back in and try again.",
+                       record=False)
+            self.actions.usb_poll(True)
         else:
-            self.status = "error"
-            self.message = message or "Switching the device to Wi-Fi mode failed. Tap Try again."
+            self.ctx.serial = self.ctx.usb_serial
+            self._connected(info, PATH_WIRED)
         self._changed()
+
+    def _read_usb(self, serial: str) -> None:
+        self.ctx.usb_serial = serial
+        self.actions.usb_poll(False)
+        self._goto(USB_PLUG, "working", "Connecting…", record=False)
+        self.busy = True
+        self.actions.read_usb_device(serial)
 
     def _scan_for_phone(self) -> None:
         pairing = [s for s in self.services if s.kind == "pairing"
@@ -562,24 +576,26 @@ class Wizard:
         self.status, self.message = "working", "Connecting…"
         self.actions.connect(*target)
 
-    def _connected(self, info: DeviceInfo, method: str, device_id: str) -> None:
+    def _connected(self, info: DeviceInfo, path: str, guid: str = "") -> None:
         self.history = []          # pairing/cable steps can't be revisited once connected
         self.ctx.info = info
         self.ctx.brand = brand_for_manufacturer(info.manufacturer) or self.ctx.brand
-        host, _, port = self.ctx.serial.rpartition(":")
-        self.ctx.device = SavedDevice(
-            id=device_id, method=method, serialno=info.serialno, model=info.model,
-            manufacturer=info.manufacturer, android_release=info.release, sdk=info.sdk,
-            last_host=host, last_port=int(port) if port.isdigit() else TCPIP_PORT,
-            last_connected_at=time.time())
-        self.actions.save_device(self.ctx.device)
-        if method == WIRELESS and needs_input_check(info.manufacturer):
+        common = dict(serialno=info.serialno, model=info.model, manufacturer=info.manufacturer,
+                      android_release=info.release, sdk=info.sdk, last_connected_at=time.time())
+        if path == PATH_WIRED:
+            device = SavedDevice(id=f"usb-{info.serialno or self.ctx.usb_serial}", setup=SETUP_WIRED, method=NONE,
+                                 usb_serial=self.ctx.usb_serial, **common)
+        else:
+            host, _, port = self.ctx.serial.rpartition(":")
+            device = SavedDevice(id=guid, setup=SETUP_WIRELESS, method=WIRELESS,
+                                 wireless_guid=guid if guid.startswith("adb-") else "", last_host=host,
+                                 last_port=int(port) if port.isdigit() else TCPIP_PORT, wifi_ok=True, **common)
+        self._store(device)
+        if needs_input_check(info.manufacturer):
             self._goto(OEM_INPUT, "working", "Checking your device's settings…")
             self._check_input()
-        elif method == WIRELESS:
-            self._enter_companion()
         else:
-            self._goto(USB_UNPLUG, "waiting")
+            self._enter_companion()
 
     def _check_input(self) -> None:
         self.busy = True
@@ -593,19 +609,15 @@ class Wizard:
             self._goto(COMPANION)
 
     def _enter_tile(self) -> None:
-        if self.ctx.path == "usb" or self.ctx.info.sdk < companion_mod.WIRELESS_DEBUGGING_SDK:
+        if self.ctx.path == PATH_WIRED or self.ctx.info.sdk < companion_mod.WIRELESS_DEBUGGING_SDK:
             self._goto(TEST)
         else:
             self._goto(TILE)
 
-    def _start_tcpip(self) -> None:
-        self.busy = True
-        self.status, self.message = "working", "Switching your device to Wi-Fi mode…"
-        self.actions.usb_tcpip(self.ctx.usb_serial)
-
     def view(self) -> dict:
-        order = USB_ORDER if self.ctx.path == "usb" else WIRELESS_ORDER
-        step_for_progress = _PROGRESS_ALIAS.get(self.step, self.step)
+        wired = self.ctx.path == PATH_WIRED
+        order = WIRED_ORDER if wired else WIRELESS_ORDER
+        step_for_progress = USB_PLUG if wired and self.step == OEM_INPUT else _PROGRESS_ALIAS.get(self.step, self.step)
         index = order.index(step_for_progress) if step_for_progress in order else 0
         pair = self.ctx.pair_service
         return {
@@ -626,6 +638,8 @@ class Wizard:
             "pairHost": pair.host if pair else "",
             "pairPort": pair.port if pair else 0,
             "usbState": self.ctx.usb_state,
+            "usbCandidates": [{"serial": e.serial, "model": e.props.get("model", "").replace("_", " ") or e.serial}
+                              for e in self.ctx.usb_candidates],
             "companionSteps": dict(self.ctx.companion_steps),
             "device": {
                 "id": self.ctx.device.id if self.ctx.device else "",

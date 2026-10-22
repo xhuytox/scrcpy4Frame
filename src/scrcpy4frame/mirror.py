@@ -59,15 +59,22 @@ _PATTERNS = [
 ]
 
 
-def classify(exit_code: int, stderr: str) -> MirrorOutcome:
+# Over USB, Wi-Fi and Wireless debugging have nothing to do with it.
+_USB_MESSAGES = {
+    "disconnected": "The connection to your device dropped. It may have locked or been unplugged.",
+    "no_device": "The device isn't connected any more. Check that it's still plugged in.",
+}
+
+
+def classify(exit_code: int, stderr: str, usb: bool = False) -> MirrorOutcome:
     if exit_code == EXIT_OK:
         return MirrorOutcome("ok", "")
     if exit_code == EXIT_DISCONNECTED:
-        return MirrorOutcome("disconnected",
+        return MirrorOutcome("disconnected", _USB_MESSAGES["disconnected"] if usb else
                              "The connection to your device dropped. It may have locked, left the "
                              "Wi-Fi or turned off Wireless debugging.")
     for pattern, kind, message, retry in _PATTERNS:
         if pattern.search(stderr):
-            return MirrorOutcome(kind, message, retry)
+            return MirrorOutcome(kind, _USB_MESSAGES.get(kind, message) if usb else message, retry)
     tail = "\n".join(line for line in stderr.strip().splitlines()[-3:])
     return MirrorOutcome("failed", "Couldn't connect to the device." + (f"\n{tail}" if tail else ""))

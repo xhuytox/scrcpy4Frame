@@ -43,7 +43,12 @@ Item {
         "download": "M12 3.5 V15 M7 10 L12 15 L17 10 M4.5 19.5 H19.5",
         "x": "M7 7 L17 17 M17 7 L7 17",
         "down": "M6 9 L12 15 L18 9",
-        "up": "M6 15 L12 9 L18 15"
+        "up": "M6 15 L12 9 L18 15",
+        "wifi": "M2 9 A15 15 0 0 1 22 9 M5.5 12.5 A9.5 9.5 0 0 1 18.5 12.5 M9 16 A4.5 4.5 0 0 1 15 16"
+                + " M11 19.5 A1 1 0 1 0 13 19.5 A1 1 0 1 0 11 19.5 Z",
+        // The USB trident: arrow on top, a round and a square branch, a circle at the base.
+        "usb": "M12 3 V19 M9.5 5.5 L12 3 L14.5 5.5 M12 16 L7 13 V10 M5.5 8.5 A1.5 1.5 0 1 0 8.5 8.5 A1.5 1.5 0 1 0 5.5 8.5 Z"
+               + " M12 13 L17 10.5 V8.5 M15.5 5.5 H18.5 V8.5 H15.5 Z M10.5 20.5 A1.5 1.5 0 1 0 13.5 20.5 A1.5 1.5 0 1 0 10.5 20.5 Z"
     })
 
     visible: name.length > 0

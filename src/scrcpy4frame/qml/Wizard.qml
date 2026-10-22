@@ -11,7 +11,8 @@ Item {
     readonly property string step: w.step || ""
 
     readonly property var fallbackTitles: ({
-        "brand": "Let's connect your device",
+        "setup": "How do you want to set up your device?",
+        "brand": "Which device do you have?",
         "done": "All set"
     })
 
@@ -22,12 +23,10 @@ Item {
         switch (step) {
         case "wireless": return "Waiting for your device…"
         case "pair_open": return "Waiting for the pairing window…"
-        case "usb_plug": return "Waiting for your device…"
+        case "usb_plug": return w.message || "Waiting for your device…"
         case "usb_auth": return "Waiting for you to tap Allow…"
         case "usb_perms": return "Waiting for permission…"
-        case "usb_unplug": return "Waiting for you to unplug the cable…"
         case "connecting": return "Connecting…"
-        case "usb_tcpip": return "Working…"
         case "oem_input": return w.status === "working" ? "Checking…" : "Waiting for the setting…"
         default: return ""
         }
@@ -107,7 +106,9 @@ Item {
                 Layout.fillWidth: true
                 sourceComponent: {
                     switch (wp.step) {
+                    case "setup": return setupStep
                     case "brand": return brandStep
+                    case "usb_pick": return usbPickStep
                     case "pick_phone": return pickStep
                     case "pair_code": return codeStep
                     case "manual": return manualStep
@@ -124,13 +125,62 @@ Item {
     }
 
     Component {
+        id: setupStep
+        ColumnLayout {
+            spacing: theme.gap
+            SetupOption {
+                Layout.fillWidth: true
+                glyph: "wifi"
+                title: "Wireless"
+                description: "Pair over Wi-Fi with a code. Android 11 or newer."
+                onClicked: wp.act("choose_setup", ["wireless"])
+            }
+            SetupOption {
+                Layout.fillWidth: true
+                glyph: "usb"
+                title: "Wired"
+                description: "Plug into the Frame's USB port. Android 5 or newer."
+                onClicked: wp.act("choose_setup", ["wired"])
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "After setup, your device uses the cable when it's plugged in and Wi-Fi when it isn't."
+                color: theme.textDim
+                font.pixelSize: theme.fontSmall
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    Component {
+        id: usbPickStep
+        ColumnLayout {
+            spacing: theme.gap
+            Card {
+                Layout.fillWidth: true
+                GuideSteps { Layout.fillWidth: true; numbered: false; lines: wp.g.lines || [] }
+            }
+            Repeater {
+                model: wp.w.usbCandidates || []
+                delegate: BigButton {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    text: modelData.model
+                    onClicked: wp.act("pick_usb", [modelData.serial])
+                }
+            }
+        }
+    }
+
+    Component {
         id: brandStep
         ColumnLayout {
             spacing: theme.gap
             Text {
                 Layout.fillWidth: true
-                text: "Which device do you have? We'll show you exactly where to tap."
-                      + (app.network.ssid ? " Your device needs to be on the same Wi-Fi as the Frame: \"" + app.network.ssid + "\"." : "")
+                text: "We'll show you exactly where to tap."
+                      + (wp.w.path === "wireless" && app.network.ssid
+                         ? " Your device needs to be on the same Wi-Fi as the Frame: \"" + app.network.ssid + "\"." : "")
                 color: theme.textDim
                 font.pixelSize: theme.font
                 wrapMode: Text.WordWrap
@@ -148,22 +198,6 @@ Item {
                         text: modelData.label
                         onClicked: wp.act("choose_brand", [modelData.id])
                     }
-                }
-            }
-            Card {
-                Layout.fillWidth: true
-                visible: wp.w.path !== "usb"
-                Text {
-                    Layout.fillWidth: true
-                    text: "Device on Android 10 or older, or no Wi-Fi pairing? You can set it up once with a USB cable plugged into the Frame."
-                    color: theme.textDim
-                    font.pixelSize: theme.fontSmall
-                    wrapMode: Text.WordWrap
-                }
-                BigButton {
-                    compact: true
-                    text: "Use a USB cable instead"
-                    onClicked: app.startWizard("usb", "")
                 }
             }
         }
@@ -228,7 +262,7 @@ Item {
                     onClicked: wp.act("next")
                 }
                 BigButton {
-                    visible: (wp.step === "connecting" || wp.step === "usb_tcpip" || wp.step === "usb_unplug") && wp.w.status === "error"
+                    visible: wp.step === "connecting" && wp.w.status === "error"
                     kind: "primary"; text: "Try again"
                     onClicked: wp.act("retry")
                 }
@@ -532,7 +566,7 @@ Item {
                 highlighted: true
                 Text {
                     Layout.fillWidth: true
-                    text: "Paired with " + (wp.w.device.model || "your device")
+                    text: (wp.w.path === "wired" ? "Connected to " : "Paired with ") + (wp.w.device.model || "your device")
                           + (wp.w.device.release ? " (Android " + wp.w.device.release + ")" : "")
                     color: theme.ok
                     font.pixelSize: theme.fontLarge
@@ -540,6 +574,15 @@ Item {
                     wrapMode: Text.WordWrap
                 }
                 GuideSteps { Layout.fillWidth: true; numbered: false; lines: wp.g.lines || [] }
+            }
+            Text {
+                // The Wi-Fi hand-off may be waiting on Android's "Allow wireless debugging on this network?".
+                Layout.fillWidth: true
+                visible: wp.w.path === "wired" && app.handoffAsking.indexOf(wp.w.device.id) >= 0
+                text: "If your device asks to allow wireless debugging on this network, tap Always allow."
+                color: theme.textDim
+                font.pixelSize: theme.font
+                wrapMode: Text.WordWrap
             }
             Flow {
                 Layout.fillWidth: true

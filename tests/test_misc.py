@@ -35,6 +35,12 @@ def test_mirror_args_defaults():
     assert "--max-size=1280" in build_args("scrcpy", "s", "t", Settings(), max_size_override=1280)
 
 
+def test_usb_mirror_failures_dont_blame_wifi():
+    assert "unplugged" in classify(2, "", usb=True).message
+    assert "Wi-Fi" not in classify(1, "Could not find any ADB device", usb=True).message
+    assert "Wireless debugging" in classify(1, "Could not find any ADB device").message
+
+
 def test_mirror_classify():
     assert classify(0, "").kind == "ok"
     assert classify(2, "").kind == "disconnected"
@@ -276,11 +282,12 @@ def test_router_forgets_a_device():
 def test_device_store_roundtrip_and_repair_dedupe(tmp_path):
     store = DeviceStore(tmp_path / "devices.json")
     store.upsert(SavedDevice(id="adb-AAA-111111", serialno="AAA", model="Pixel 8", companion=True))
-    store.upsert(SavedDevice(id="adb-AAA-222222", serialno="AAA", model="Pixel 8"))
+    store.upsert(SavedDevice(id="adb-AAA-222222", serialno="AAA", model="Pixel 8", wireless_guid="adb-AAA-222222"))
     reloaded = DeviceStore(tmp_path / "devices.json")
-    assert [d.id for d in reloaded.all()] == ["adb-AAA-222222"]
-    assert reloaded.get("adb-AAA-222222").companion          # carried over from the old pairing
-    assert reloaded.find_by_guid("adb-AAA-999999").id == "adb-AAA-222222"
+    assert [d.id for d in reloaded.all()] == ["adb-AAA-111111"]     # the id never changes
+    assert reloaded.get("adb-AAA-111111").companion
+    assert reloaded.get("adb-AAA-111111").wireless_guid == "adb-AAA-222222"
+    assert reloaded.find_by_guid("adb-AAA-999999").id == "adb-AAA-111111"
 
 
 def test_settings_store_types(tmp_path):

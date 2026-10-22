@@ -152,13 +152,17 @@ def parse_connect(result: CmdResult) -> ConnectResult:
     return ConnectResult(False, "other", text or f"adb connect exited with {result.rc}")
 
 
+def parse_ipv4_addrs(out: str) -> list[tuple[str, int]]:
+    """Every non-loopback IPv4 and prefix from `ip -o -4 addr` output, in order."""
+    return [(m.group(1), int(m.group(2)))
+            for m in re.finditer(r"inet (\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})", out)
+            if not m.group(1).startswith("127.")]
+
+
 def parse_wlan_ip(out: str) -> tuple[str, int] | None:
     """First non-loopback IPv4 and prefix from `ip -o -4 addr` output."""
-    for match in re.finditer(r"inet (\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})", out):
-        ip = match.group(1)
-        if not ip.startswith("127."):
-            return ip, int(match.group(2))
-    return None
+    found = parse_ipv4_addrs(out)
+    return found[0] if found else None
 
 
 def parse_tcpip(result: CmdResult) -> bool:
@@ -258,6 +262,12 @@ class Adb:
         # adb joins remote arguments with spaces, so pass the command as one pre-quoted string.
         return self.run("shell", command, serial=serial, timeout=timeout)
 
+    def responds(self, serial: str, timeout: float = 5) -> bool:
+        """The device answers over this connection. `adb devices` keeps listing a Wi-Fi connection as
+        "device" for minutes after the device left the network."""
+        result = self.shell(serial, "echo ok", timeout=timeout)
+        return result.rc == 0 and result.out.strip() == "ok"
+
     def device_info(self, serial: str) -> DeviceInfo:
         return DeviceInfo.from_props(parse_getprop_lines(self.shell(serial, "getprop").out))
 
@@ -267,6 +277,26 @@ class Adb:
     def wlan_ip(self, serial: str) -> tuple[str, int] | None:
         found = parse_wlan_ip(self.shell(serial, "ip -o -4 addr show wlan0").out)
         return found or parse_wlan_ip(self.shell(serial, "ip -o -4 addr").out)
+
+    def ipv4_addrs(self, serial: str) -> list[tuple[str, int]]:
+        return parse_ipv4_addrs(self.shell(serial, "ip -o -4 addr").out)
+
+    def wireless_debugging_enabled(self, serial: str) -> bool | None:
+        value = self.shell(serial, "settings get global adb_wifi_enabled").out.strip()
+        return {"1": True, "0": False}.get(value)
+
+    def set_wireless_debugging(self, serial: str, on: bool) -> None:
+        self.shell(serial, f"settings put global adb_wifi_enabled {1 if on else 0}")
+
+    def keyguard_showing(self, serial: str) -> bool:
+        """The lock screen is up, so the device can't show a prompt."""
+        out = self.shell(serial, "dumpsys window").out
+        return "isKeyguardShowing=true" in out or "mDreamingLockscreen=true" in out
+
+    def wireless_debugging_port(self, serial: str) -> int:
+        """The port Wireless debugging listens on (Android 11+), or 0 while it's off."""
+        value = self.shell(serial, "getprop service.adb.tls.port").out.strip()
+        return int(value) if value.isdigit() and int(value) > 0 else 0
 
     def install(self, serial: str, apk: str | Path) -> CmdResult:
         return self.run("install", "-r", str(apk), serial=serial, timeout=180)
@@ -335,6 +365,8 @@ class AdbServer:
         return False
 
     def stop(self) -> None:
+        if self._proc is None:
+            return                  # reused someone else's server (the running app's): leave it up
         self.adb.kill_server()
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()

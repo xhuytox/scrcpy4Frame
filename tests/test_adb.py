@@ -1,6 +1,7 @@
 from scrcpy4frame.adb import (Adb, CmdResult, DeviceInfo, is_ignored_serial, is_tcp_serial,
                               make_env, parse_connect, parse_devices, parse_getprop_lines,
-                              parse_pair, parse_tcpip, parse_wlan_ip, server_argv)
+                              parse_ipv4_addrs, parse_pair, parse_tcpip, parse_wlan_ip,
+                              server_argv)
 
 
 def test_parse_devices_states_props_and_filters_local_instances():
@@ -95,3 +96,63 @@ def test_server_argv_can_stay_off_usb(monkeypatch):
     assert server_argv("adb") == ["adb", "server", "nodaemon"]
     monkeypatch.setenv("SCRCPY4FRAME_NO_USB", "1")
     assert server_argv("adb")[:3] == ["adb", "--one-device", "scrcpy4frame-no-usb"]
+
+
+def test_parse_ipv4_addrs_lists_every_interface():
+    out = ("1: lo    inet 127.0.0.1/8 scope host lo\n"
+           "12: rmnet_data0    inet 10.12.0.5/30 scope global rmnet_data0\n"
+           "30: wlan0    inet 192.168.1.23/24 brd 192.168.1.255 scope global wlan0\n")
+    assert parse_ipv4_addrs(out) == [("10.12.0.5", 30), ("192.168.1.23", 24)]
+    assert parse_ipv4_addrs("") == []
+
+
+def test_wireless_debugging_commands():
+    calls, replies = [], iter(["1\n", "0\n", "null\n", "37099\n", "\n"])
+
+    def runner(args, env, timeout):
+        calls.append(args[-1])
+        return CmdResult(0, next(replies, ""), "")
+
+    adb = Adb("/app/bin/adb", env={}, runner=runner)
+    assert adb.wireless_debugging_enabled("R5CT") is True
+    assert adb.wireless_debugging_enabled("R5CT") is False
+    assert adb.wireless_debugging_enabled("R5CT") is None
+    assert adb.wireless_debugging_port("R5CT") == 37099
+    assert adb.wireless_debugging_port("R5CT") == 0
+    adb.set_wireless_debugging("R5CT", True)
+    assert calls[-1] == "settings put global adb_wifi_enabled 1"
+    adb.set_wireless_debugging("R5CT", False)
+    assert calls[-1] == "settings put global adb_wifi_enabled 0"
+    assert calls[3] == "getprop service.adb.tls.port"
+
+
+def test_keyguard_showing():
+    replies = iter(["    isKeyguardShowing=true\n", "    mDreamingLockscreen=true\n",
+                    "    isKeyguardShowing=false mDreamingLockscreen=false\n"])
+    adb = Adb("/app/bin/adb", env={}, runner=lambda args, env, timeout: CmdResult(0, next(replies), ""))
+    assert adb.keyguard_showing("R5CT") and adb.keyguard_showing("R5CT")
+    assert not adb.keyguard_showing("R5CT")
+
+
+def test_responds_only_when_the_device_answers():
+    replies = iter([CmdResult(0, "ok\n", ""), CmdResult(124, "", "timed out after 5s"),
+                    CmdResult(1, "", "error: device offline")])
+    calls = []
+    adb = Adb("/app/bin/adb", env={}, runner=lambda args, env, timeout: calls.append((args[1:], timeout))
+              or next(replies))
+    assert adb.responds("192.168.1.23:5555", timeout=4)
+    assert not adb.responds("192.168.1.23:5555") and not adb.responds("192.168.1.23:5555")
+    assert calls[0] == (["-s", "192.168.1.23:5555", "shell", "echo ok"], 4)
+
+
+def test_a_reused_server_is_left_running(monkeypatch):
+    # `cli` over SSH reuses the app's server; stopping must not kill it under the running app.
+    from scrcpy4frame import adb as adb_mod
+
+    calls = []
+    adb = Adb("/app/bin/adb", env={}, runner=lambda args, env, timeout: calls.append(args[1:]) or CmdResult(0, "", ""))
+    monkeypatch.setattr(adb_mod, "_port_open", lambda port: True)
+    server = adb_mod.AdbServer(adb)
+    assert server.start()
+    server.stop()
+    assert ["kill-server"] not in calls

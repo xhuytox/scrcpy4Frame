@@ -12,6 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from scrcpy4frame.adb import CmdResult, ConnectResult, DeviceEntry, DeviceInfo  # noqa: E402
 from scrcpy4frame.devices import SavedDevice  # noqa: E402
 from scrcpy4frame.discovery import Service  # noqa: E402
+from scrcpy4frame.handoff import HandoffResult  # noqa: E402
+from scrcpy4frame.netinfo import NetInfo  # noqa: E402
 
 PIXEL = DeviceInfo(serialno="1A2B3C4D", model="Pixel 8", manufacturer="Google", release="15", sdk=35)
 
@@ -23,6 +25,9 @@ class FakeAdb:
         self.connected: set[str] = set()
         self.connect_result = ConnectResult(True, message="connected")
         self.uninstall_result = CmdResult(0, "Success", "")
+        self.usb: dict[str, str] = {}           # USB serial -> state
+        self.gone: set[str] = set()             # still listed as "device", but the device left the Wi-Fi
+        self.info: dict[str, DeviceInfo] = {}
         self.calls = []
 
     def shell(self, serial, command, timeout=15):
@@ -35,6 +40,9 @@ class FakeAdb:
             self.connected.add(f"{host}:{port}")
         return self.connect_result
 
+    def responds(self, serial, timeout=5):
+        return serial in self.connected and serial not in self.gone
+
     def wait_for_device(self, serial, timeout=10):
         return serial in self.connected
 
@@ -42,7 +50,7 @@ class FakeAdb:
         return "device" if serial in self.connected else ""
 
     def device_info(self, serial):
-        return PIXEL
+        return self.info.get(serial, PIXEL)
 
     def disconnect(self, serial):
         self.calls.append(("disconnect", serial))
@@ -53,7 +61,8 @@ class FakeAdb:
         return self.uninstall_result
 
     def devices(self):
-        return [DeviceEntry(s, "device") for s in sorted(self.connected)]
+        return ([DeviceEntry(s, "device") for s in sorted(self.connected)]
+                + [DeviceEntry(s, state) for s, state in sorted(self.usb.items())])
 
     def forward(self, serial, remote):
         return None
@@ -955,3 +964,517 @@ def test_forgetting_a_device_without_the_companion_only_disconnects(ctl):
     assert not any(c[0] == "uninstall" or "adb_wifi_enabled" in str(c) for c in controller.adb.calls)
     assert ("disconnect", "192.168.1.23:41235") in controller.adb.calls
     assert controller.devices == [] and banners == []
+
+
+def test_plugged_in_device_uses_usb_and_falls_back_to_wifi(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D", wireless_guid="adb-1A2B3C4D-vWgJpq"))
+    service = Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)
+    controller._on_services([service])
+    assert controller.devices[0]["via"] == "wifi"
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    row = controller.devices[0]
+    assert row["status"] == "connected" and row["via"] == "usb" and row["host"] == ""
+    assert controller.runtime["adb-1A2B3C4D-vWgJpq"].serial == "1A2B3C4D"
+    del controller.adb.usb["1A2B3C4D"]
+    controller._on_entries(controller.adb.devices())
+    assert controller.devices[0]["via"] == "wifi"
+
+
+def test_usb_serial_that_differs_is_matched_by_ro_serialno(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none", serialno="1A2B3C4D"))
+    controller.adb.usb["ALIAS9"] = "device"
+    controller._on_entries(controller.adb.devices())
+    assert controller.store.get("usb-1A2B3C4D").usb_serial == "ALIAS9"
+    assert controller.devices[0]["via"] == "usb"
+
+
+def test_wired_device_unplugged_says_plug_in(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none", serialno="1A2B3C4D"))
+    controller._on_entries([])
+    row = controller.devices[0]
+    assert row["status"] == "unplugged" and controller.adb.calls == []
+    assert row["detail"] == ('Plugged in? On the device, tap the USB notification. '
+                             'If you see "USB controlled by", choose "This device".')    # every plug-in
+    controller.store.upsert(replace(controller.store.get("usb-1A2B3C4D"), manufacturer="samsung"))
+    controller._on_entries([])
+    assert 'Set "USB controlled by" to "This device".' in controller.devices[0]["detail"]
+
+
+def test_unauthorized_usb_hint_on_card_or_home(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D"))
+    controller._on_entries([DeviceEntry("1A2B3C4D", "unauthorized")])
+    assert controller.devices[0]["usbHint"] == "unauthorized" and controller.usbHint == ""
+    controller._on_entries([DeviceEntry("ZZZ", "no permissions")])
+    assert controller.devices[0]["usbHint"] == "" and controller.usbHint == "no permissions"
+
+
+def test_wired_setup_saves_without_a_bogus_wifi_serial(ctl):
+    controller, _ = ctl
+    stored = controller.device_saved(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none",
+                                                 serialno="1A2B3C4D", usb_serial="1A2B3C4D"))
+    rt = controller.runtime[stored.id]
+    assert rt.wifi_serial == "" and rt.serial == "1A2B3C4D" and controller.devices[0]["status"] == "connected"
+
+
+def test_forgetting_a_wired_device_turns_off_wireless_debugging_it_turned_on(ctl):
+    controller, _ = ctl
+    controller.device_saved(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="wireless", serialno="1A2B3C4D",
+                                        usb_serial="1A2B3C4D", companion=True, app_enabled_wireless_debugging=True))
+    controller.forgetDevice("usb-1A2B3C4D")
+    assert ("shell", "1A2B3C4D", "settings put global adb_wifi_enabled 0") in controller.adb.calls
+
+
+class FakeHandoff:
+    def __init__(self):
+        self.address = ""
+        self.wd = HandoffResult(False)
+        self.tcpip = HandoffResult(False)
+        self.address_calls = self.wd_calls = 0
+        self.tcpip_calls = []
+
+
+@pytest.fixture
+def fake_handoff(monkeypatch):
+    from scrcpy4frame import handoff
+
+    fake = FakeHandoff()
+
+    def device_address(adb, usb_serial, net):
+        fake.address_calls += 1
+        return fake.address
+
+    def try_wireless_debugging(adb, usb_serial, host, **kwargs):
+        fake.wd_calls += 1
+        fake.found_port = kwargs.get("find_port", lambda: 0)()
+        return fake.wd
+
+    def try_tcpip(adb, usb_serial, host, **kwargs):
+        fake.tcpip_calls.append((usb_serial, host))
+        return fake.tcpip
+
+    monkeypatch.setattr(handoff, "device_address", device_address)
+    monkeypatch.setattr(handoff, "try_wireless_debugging", try_wireless_debugging)
+    monkeypatch.setattr(handoff, "try_tcpip", try_tcpip)
+    return fake
+
+
+class Deferred:
+    """Task runner that holds work until the test lets it finish."""
+
+    def __init__(self):
+        self.queue = []
+
+    def run(self, fn, *args, on_done=None, on_error=None):
+        self.queue.append((fn, args, on_done, on_error))
+
+    def flush_one(self):
+        fn, args, on_done, on_error = self.queue.pop(0)
+        try:
+            result = fn(*args)
+        except Exception as exc:  # pragma: no cover - surfaced through on_error
+            if on_error:
+                on_error(exc)
+            return
+        if on_done:
+            on_done(result)
+
+    def flush(self):
+        while self.queue:
+            self.flush_one()
+
+
+@pytest.fixture
+def deferred(ctl):
+    controller, _ = ctl
+    runner = Deferred()
+    controller.runner.run = runner.run
+    return runner
+
+
+def plug_in(controller, serial="1A2B3C4D", **fields):
+    device = SavedDevice(**{"id": "usb-1A2B3C4D", "setup": "wired", "method": "none", "serialno": "1A2B3C4D",
+                            "sdk": 35, **fields})
+    controller.store.upsert(device)
+    controller.adb.usb[serial] = "device"
+    controller._on_entries(controller.adb.devices())
+    return device.id
+
+
+def test_handoff_gets_wireless_debugging(ctl, fake_handoff):
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    fake_handoff.address, fake_handoff.wd = "192.168.1.23", HandoffResult(True, "192.168.1.23", 37099, enabled_wd=True)
+    device_id = plug_in(controller)
+    stored = controller.store.get(device_id)
+    assert stored.method == "wireless" and stored.wd_asked_networks == [] and stored.app_enabled_wireless_debugging
+    assert controller.runtime[device_id].wifi_serial == "192.168.1.23:37099"
+    assert controller.devices[0]["via"] == "usb"             # still plugged in: the cable wins
+    assert fake_handoff.tcpip_calls == []
+
+
+def test_declined_prompt_falls_back_to_tcpip_and_never_asks_again(ctl, fake_handoff):
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    fake_handoff.address, fake_handoff.wd = "192.168.1.23", HandoffResult(False)
+    fake_handoff.tcpip = HandoffResult(True, "192.168.1.23", 5555)
+    device_id = plug_in(controller)
+    stored = controller.store.get(device_id)
+    assert stored.method == "tcpip" and stored.last_port == 5555 and stored.wd_asked_networks == ["Home"]
+    rt = controller.runtime[device_id]
+    rt.wifi_serial, rt.next_handoff = "", 0                  # Wi-Fi mode wore off; plugged in again
+    controller._on_entries(controller.adb.devices())
+    assert fake_handoff.wd_calls == 1 and len(fake_handoff.tcpip_calls) == 2
+
+
+def test_phone_joining_wifi_later_is_retried(ctl, fake_handoff, monkeypatch):
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    device_id = plug_in(controller)                          # no address on the Frame's network yet
+    assert controller.runtime[device_id].next_handoff > time.monotonic()
+    controller.runtime[device_id].next_handoff = 0           # HANDOFF_RETRY_S later
+    controller._on_entries(controller.adb.devices())
+    assert fake_handoff.address_calls == 2
+
+
+def test_tcpip_waits_while_the_device_is_busy(ctl, fake_handoff):
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    fake_handoff.address = "192.168.1.23"
+    device_id = plug_in(controller, sdk=29)                  # Android 10: straight to tcpip
+    assert fake_handoff.tcpip_calls != []
+    controller.runtime[device_id].next_handoff = 0
+    controller.runtime[device_id].wifi_serial = ""
+    controller.runtime[device_id].ops = 1
+    calls = len(fake_handoff.tcpip_calls)
+    controller._on_entries(controller.adb.devices())
+    assert len(fake_handoff.tcpip_calls) == calls
+
+
+def test_switching_blocks_mirror_and_installs(ctl, fake_handoff):
+    controller, _ = ctl
+    banners = []
+    controller.banner.connect(lambda text, kind: banners.append(text))
+    device_id = plug_in(controller)
+    controller.runtime[device_id].handoff = "tcpip"
+    controller.mirror(device_id)
+    controller.installCompanion(device_id)
+    assert banners == ["Your device is switching connections. Try again in a few seconds."] * 2
+
+
+def test_usb_drop_after_tcpip_uses_wifi_until_usb_returns(ctl, fake_handoff):
+    controller, _ = ctl
+    device_id = plug_in(controller)
+    rt = controller.runtime[device_id]
+    rt.wifi_serial, rt.usb_grace_until = "192.168.1.23:5555", time.monotonic() + 60
+    controller.adb.connected.add("192.168.1.23:5555")
+    del controller.adb.usb["1A2B3C4D"]
+    controller._on_entries(controller.adb.devices())
+    assert rt.usb_state == "returning" and rt.serial == "192.168.1.23:5555"
+    assert controller.devices[0]["via"] == "usb"             # not shown as unplugged
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    assert rt.serial == "1A2B3C4D"
+
+
+def test_no_handoff_when_the_frame_is_offline(ctl, fake_handoff):     # Review Focus 3
+    controller, _ = ctl
+    controller.net = NetInfo()
+    plug_in(controller)
+    assert fake_handoff.address_calls == 0 and controller.devices[0]["status"] == "connected"
+
+
+def test_result_after_unplug_is_dropped(ctl, fake_handoff, deferred):  # Review Focus 2
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    fake_handoff.address, fake_handoff.wd = "192.168.1.23", HandoffResult(False)
+    device_id = plug_in(controller)
+    deferred.flush_one()                                     # address back: Wireless debugging attempt queued
+    del controller.adb.usb["1A2B3C4D"]                       # cable pulled during the wait
+    controller._on_entries(controller.adb.devices())
+    deferred.flush()
+    assert controller.runtime[device_id].handoff == "" and fake_handoff.tcpip_calls == []
+    assert controller.store.get(device_id).wd_asked_networks == []
+    assert controller.devices[0]["status"] == "unplugged"
+
+
+
+def test_wired_device_refused_over_wifi_does_not_retry_every_poll(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="wireless", serialno="1A2B3C4D"))
+    controller.adb.connect_result = ConnectResult(False, "auth", "failed to authenticate")
+    service = Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)
+    for _ in range(4):
+        controller._on_services([service])
+    assert sum(1 for c in controller.adb.calls if c[0] == "connect") == 1
+    assert controller.devices[0]["status"] == "unplugged"
+
+
+def test_wired_setup_again_keeps_the_saved_device(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="wireless", serialno="1A2B3C4D",
+                                        nickname="Mine", app_enabled_wireless_debugging=True))
+    stored = controller.device_saved(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none",
+                                                 serialno="1A2B3C4D", usb_serial="1A2B3C4D"))
+    assert stored.method == "wireless" and stored.nickname == "Mine" and stored.app_enabled_wireless_debugging
+
+
+def test_no_companion_link_while_adbd_restarts(ctl):
+    controller, _ = ctl
+    device_id = plug_in(controller, companion=True)
+    assert device_id in controller.links
+    rt = controller.runtime[device_id]
+    controller._stop_link(device_id)
+    rt.handoff = "tcpip"
+    controller._on_entries(controller.adb.devices())        # USB still listed before adbd restarts
+    assert device_id not in controller.links
+    rt.handoff, rt.usb_grace_until = "", time.monotonic() + 60
+    del controller.adb.usb["1A2B3C4D"]
+    controller._on_entries(controller.adb.devices())        # returning, and no Wi-Fi yet
+    assert device_id not in controller.links
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    assert controller.links[device_id].serial == "1A2B3C4D"
+
+
+def test_offline_while_adbd_restarts_is_returning(ctl):
+    controller, _ = ctl
+    device_id = plug_in(controller)
+    controller.runtime[device_id].usb_grace_until = time.monotonic() + 60
+    controller.adb.usb["1A2B3C4D"] = "offline"
+    controller._on_entries(controller.adb.devices())
+    assert controller.runtime[device_id].usb_state == "returning"
+
+
+def test_plugged_in_but_not_allowed_is_not_told_to_plug_in(ctl):
+    controller, _ = ctl
+    controller.store.upsert(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none", serialno="1A2B3C4D"))
+    controller._on_entries([DeviceEntry("1A2B3C4D", "unauthorized")])
+    row = controller.devices[0]
+    assert row["status"] == "usb_waiting" and row["usbHint"] == "unauthorized"
+
+
+def test_tcpip_waits_for_the_wizard_to_close(ctl, fake_handoff):
+    from scrcpy4frame import wizard as W
+
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    fake_handoff.address = "192.168.1.23"
+    controller.set_wizard_active(True)
+    controller.wizard.step = W.TEST                          # the test mirror may start any moment
+    plug_in(controller, sdk=29)
+    assert fake_handoff.tcpip_calls == []
+    controller.set_wizard_active(False)
+    controller._on_entries(controller.adb.devices())
+    assert fake_handoff.tcpip_calls != []
+
+
+def test_handoff_finds_the_port_over_mdns(ctl, fake_handoff):
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    controller.services = [Service("connect", "adb-1A2B3C4D-YtRlEH", "192.168.1.23", 46285)]
+    fake_handoff.address = "192.168.1.23"
+    plug_in(controller)
+    assert fake_handoff.found_port == 46285
+
+
+def test_locked_phone_is_asked_another_time(ctl, fake_handoff):
+    controller, _ = ctl
+    controller.net = NetInfo(ipv4="192.168.1.5", prefix=24, ssid="Home")
+    fake_handoff.address, fake_handoff.wd = "192.168.1.23", HandoffResult(False, locked=True)
+    device_id = plug_in(controller)
+    assert controller.store.get(device_id).wd_asked_networks == [] and fake_handoff.tcpip_calls != []
+
+
+def test_wifi_mirror_moves_to_usb_when_the_cable_comes_up(ctl, monkeypatch):
+    from scrcpy4frame import vrmirror
+
+    controller, _ = ctl
+    FakeVrSession.instances.clear()
+    monkeypatch.setattr(vrmirror, "available", lambda: True)
+    monkeypatch.setattr(vrmirror, "VrMirrorSession", FakeVrSession)
+    controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D", sdk=35))
+    controller._on_services([Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)])
+    controller.mirror("adb-1A2B3C4D-vWgJpq")
+    wifi = FakeVrSession.instances[-1]
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    usb = FakeVrSession.instances[-1]
+    assert wifi.stopped and usb is not wifi and usb.started and usb.serial == "1A2B3C4D"
+    assert controller.mirrorStatus["message"] == "" and controller.devices[0]["via"] == "usb"
+    controller._on_entries(controller.adb.devices())        # already on the cable: left alone
+    assert FakeVrSession.instances[-1] is usb and not usb.stopped
+
+
+def test_mirror_stays_on_wifi_while_usb_is_only_returning(ctl, monkeypatch):
+    from scrcpy4frame import vrmirror
+
+    controller, _ = ctl
+    FakeVrSession.instances.clear()
+    monkeypatch.setattr(vrmirror, "available", lambda: True)
+    monkeypatch.setattr(vrmirror, "VrMirrorSession", FakeVrSession)
+    controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D", sdk=35))
+    controller._on_services([Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)])
+    controller.mirror("adb-1A2B3C4D-vWgJpq")
+    rt = controller.runtime["adb-1A2B3C4D-vWgJpq"]
+    rt.usb_serial, rt.usb_state, rt.usb_grace_until = "1A2B3C4D", "returning", time.monotonic() + 60
+    controller._on_entries(controller.adb.devices())
+    assert not FakeVrSession.instances[-1].stopped
+
+
+SWITCH_TO_USB = "Plugged in: switching to USB. Your screen will be back in a few seconds."
+SWITCH_TO_WIFI = "Unplugged: switching to Wi-Fi. Your screen will be back in a few seconds."
+
+
+@pytest.fixture
+def vr_phone(ctl, monkeypatch):
+    """A phone reachable over Wi-Fi, mirrored in the VR panel, with banners recorded."""
+    from scrcpy4frame import vrmirror
+
+    controller, _ = ctl
+    FakeVrSession.instances.clear()
+    monkeypatch.setattr(vrmirror, "available", lambda: True)
+    monkeypatch.setattr(vrmirror, "VrMirrorSession", FakeVrSession)
+    controller.banners = []
+    controller.banner.connect(lambda text, kind: controller.banners.append(text))
+    controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D", sdk=35))
+    controller._on_services([Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)])
+    return controller, "adb-1A2B3C4D-vWgJpq"
+
+
+def test_switching_to_usb_says_so_on_home(vr_phone):
+    controller, device_id = vr_phone
+    controller.mirror(device_id)
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    assert controller.banners == [SWITCH_TO_USB]
+
+
+def test_unplugging_carries_the_mirror_over_to_wifi(vr_phone):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    assert usb.serial == "1A2B3C4D"
+    del controller.adb.usb["1A2B3C4D"]                       # pulled out: scrcpy loses the device
+    usb.ended.emit("disconnected", "connection closed by the device")
+    wifi = FakeVrSession.instances[-1]
+    assert wifi is not usb and wifi.started and wifi.serial == "192.168.1.23:41235"
+    assert controller.mirrorStatus["message"] == ""
+    assert controller.banners == [SWITCH_TO_WIFI]
+
+
+def test_usb_mirror_that_drops_while_still_plugged_in_reports_it(vr_phone):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    usb.ended.emit("disconnected", "")                       # e.g. the phone locked; the cable is still in
+    assert FakeVrSession.instances[-1] is usb
+    assert "dropped" in controller.mirrorStatus["message"]
+
+
+def test_stopping_a_usb_mirror_does_not_restart_it_on_wifi(vr_phone):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    del controller.adb.usb["1A2B3C4D"]
+    controller.stopMirror()
+    controller._on_entries(controller.adb.devices())
+    assert FakeVrSession.instances[-1] is usb and not controller.mirroring
+
+
+def test_unplugging_a_usb_only_device_reports_it(ctl, monkeypatch):
+    from scrcpy4frame import vrmirror
+
+    controller, _ = ctl
+    FakeVrSession.instances.clear()
+    monkeypatch.setattr(vrmirror, "available", lambda: True)
+    monkeypatch.setattr(vrmirror, "VrMirrorSession", FakeVrSession)
+    device_id = plug_in(controller)
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    del controller.adb.usb["1A2B3C4D"]
+    usb.ended.emit("disconnected", "")
+    assert FakeVrSession.instances[-1] is usb and "unplugged" in controller.mirrorStatus["message"]
+
+
+def test_window_mirror_also_carries_over_to_wifi(ctl, tmp_path, monkeypatch):
+    controller, app = ctl
+    args_file = tmp_path / "args.txt"
+    # Over USB the cable is pulled (scrcpy exits "disconnected"); over Wi-Fi it keeps running.
+    script = _fake_scrcpy(tmp_path, f'echo "$@" >> {args_file}\n'
+                                    'case "$*" in *--serial=1A2B3C4D*) exit 2;; esac\n'
+                                    "sleep 30")
+    monkeypatch.setenv("SCRCPY4FRAME_SCRCPY", str(script))
+    controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D", sdk=35))
+    controller._on_services([Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)])
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirror("adb-1A2B3C4D-vWgJpq")
+    del controller.adb.usb["1A2B3C4D"]
+    assert _wait_for(app, lambda: "--serial=192.168.1.23:41235" in (args_file.read_text() if args_file.exists() else ""))
+    assert controller.mirroring and controller.mirrorStatus["message"] == ""
+    controller.stopMirror()
+    assert _wait_for(app, lambda: not controller.mirroring)
+
+
+def test_wifi_the_device_left_is_dropped_though_adb_still_lists_it(ctl):
+    controller, _ = ctl
+    device_id = plug_in(controller, method="tcpip", last_host="192.168.1.23", last_port=5555)
+    del controller.adb.usb["1A2B3C4D"]
+    controller._on_entries(controller.adb.devices())
+    assert controller.devices[0]["status"] == "connected" and controller.devices[0]["via"] == "wifi"
+    controller.adb.gone.add("192.168.1.23:5555")          # Wi-Fi turned off on the device
+    controller.adb.connect_result = ConnectResult(False, "unreachable", "No route to host")
+    controller._on_entries(controller.adb.devices())      # adb still lists it, but the last check is recent
+    assert controller.devices[0]["status"] == "connected"
+    controller.runtime[device_id].next_wifi_check = 0.0
+    controller._on_entries(controller.adb.devices())
+    row = controller.devices[0]
+    assert row["status"] == "unreachable" and row["via"] == ""
+    assert ("disconnect", "192.168.1.23:5555") in controller.adb.calls
+
+
+def test_unplugging_after_the_device_left_wifi_does_not_carry_over(vr_phone):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    controller.adb.gone.add("192.168.1.23:41235")         # Wi-Fi turned off on the device while plugged in
+    controller.adb.connect_result = ConnectResult(False, "unreachable", "No route to host")
+    del controller.adb.usb["1A2B3C4D"]
+    usb.ended.emit("disconnected", "connection closed by the device")
+    assert FakeVrSession.instances[-1] is usb and controller.banners == []
+    assert ("disconnect", "192.168.1.23:41235") in controller.adb.calls
+    assert controller.devices[0]["status"] != "connected"
+    controller._mirror_to_wifi["until"] = 0.0
+    controller._on_entries(controller.adb.devices())
+    assert "unplugged" in controller.mirrorStatus["message"]
+
+
+def test_unplugged_mirror_waits_for_the_device_to_answer_over_wifi(vr_phone, deferred):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    deferred.flush()
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    del controller.adb.usb["1A2B3C4D"]
+    usb.ended.emit("disconnected", "connection closed by the device")
+    polls = controller._polls
+    while controller._polls == polls:                      # `adb devices` still lists the Wi-Fi connection
+        deferred.flush_one()
+    assert FakeVrSession.instances[-1] is usb             # but it hasn't answered since the unplug
+    deferred.flush()                                       # the device answers
+    wifi = FakeVrSession.instances[-1]
+    assert wifi is not usb and wifi.serial == "192.168.1.23:41235"
