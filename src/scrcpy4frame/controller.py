@@ -16,7 +16,7 @@ from . import (__version__, audiocast, companion, guides, handoff, netinfo, path
                screencontrol, vrmirror, wake)
 from .adb import TCPIP_PORT, Adb, AdbServer, DeviceEntry, DeviceInfo, PairResult, is_tcp_serial, make_env
 from .companion_link import CompanionLink
-from .devices import NONE, SETUP_WIRED, SETUP_WIRELESS, TCPIP, WIRELESS, DeviceStore, SavedDevice
+from .devices import NONE, SETUP_WIRED, TCPIP, WIRELESS, DeviceStore, SavedDevice
 from .discovery import Discovery, Service, serial_from_guid
 from .mirror import EXIT_DISCONNECTED, build_args, classify
 from .notify.center import NotificationCenter
@@ -1396,12 +1396,14 @@ class AppController(QObject):
 
     @Slot(str)
     def forgetDevice(self, device_id: str) -> None:
-        """Drop everything kept for the device, and uninstall its companion while adb still reaches it."""
+        """Drop everything kept for the device. While adb still reaches it, uninstall its companion, make
+        it forget our adb key and turn Wireless debugging off."""
         if self._switching(device_id):
             return
         device, rt = self.store.get(device_id), self.runtime.pop(device_id, None)
         serial = rt.serial if rt else ""
-        uninstall = bool(device and device.companion and rt and rt.status == "connected")
+        reachable = bool(serial and rt.status == "connected")
+        uninstall = bool(device and device.companion and reachable)
         # No bye: it turns Wireless debugging off, and the uninstall goes over adb. We turn it off
         # ourselves afterwards. A companion we can't reach isn't linked anyway.
         self._stop_link(device_id)
@@ -1410,7 +1412,7 @@ class AppController(QObject):
         if self._mirror_last_device == device_id:
             self._mirror_last_device = ""
         self.devicesChanged.emit()
-        if not uninstall:
+        if not reachable:
             if device and device.companion:
                 self.banner.emit(f"{device.display_name} is forgotten, but its companion app is still on it. "
                                  "Uninstall it on the device.", "error")
@@ -1418,19 +1420,26 @@ class AppController(QObject):
                 self.runner.run(self.adb.disconnect, serial)
             return
 
+        apk = paths.companion_apk_path()
+        fingerprint = companion.frame_key_fingerprint()
+        unpair = bool(device and device.sdk >= companion.WIRELESS_DEBUGGING_SDK and apk and fingerprint)
+
         # Runs on a worker thread.
         def uninstall_and_turn_off() -> bool:
-            ok = companion.uninstall(self.adb, serial)
-            # Even if the uninstall failed: we won't wake it again.
-            if (device.setup == SETUP_WIRELESS and device.method == WIRELESS) or device.app_enabled_wireless_debugging:
+            ok = companion.uninstall(self.adb, serial) if uninstall else True
+            # Even if the uninstall failed: nothing will use it again.
+            if unpair:
+                companion.unpair_and_turn_off_wireless_debugging(self.adb, serial, apk, fingerprint)
+            else:
                 companion.turn_off_wireless_debugging(self.adb, serial)
             return ok
 
         def done(ok: bool) -> None:
             self.runner.run(self.adb.disconnect, serial)
-            self.banner.emit("Companion removed." if ok else
-                             f"Couldn't uninstall the companion from {device.display_name}. "
-                             "Uninstall it on the device.", "info" if ok else "error")
+            if uninstall:
+                self.banner.emit("Companion removed." if ok else
+                                 f"Couldn't uninstall the companion from {device.display_name}. "
+                                 "Uninstall it on the device.", "info" if ok else "error")
 
         # Not counted in ops: the device is gone from the list, so no hand-off can start on it.
         self.runner.run(uninstall_and_turn_off, on_done=done, on_error=lambda e: done(False))

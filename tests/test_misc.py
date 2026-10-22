@@ -371,3 +371,11 @@ def test_png_app_icon_is_128px_and_installed():
     assert png[25] == 6                                       # RGBA
     manifest = (paths.REPO_DIR / f"flatpak/{paths.APP_ID}.yml").read_text()
     assert "hicolor/128x128/apps/${FLATPAK_ID}.png" in manifest
+
+
+def test_adb_key_fingerprint_matches_android():
+    from scrcpy4frame import companion
+
+    # AdbDebuggingManager.getFingerprints: MD5 of the base64-decoded key, upper-case hex joined by ":".
+    assert companion.key_fingerprint("YWJj scrcpy4Frame@SteamFrame\n") == \
+        "90:01:50:98:3C:D2:4F:B0:D6:96:3F:7D:28:E1:7F:72"

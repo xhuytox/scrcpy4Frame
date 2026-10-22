@@ -127,8 +127,10 @@ start it again, so it only quits. The tag format and asset name are part of that
   the Frame knows it arrived; the Frame waits up to 1 s for that before stopping its adb server. The
   Frame sends it after everything else that needs adb, since Wireless debugging goes off. Not sent
   when the Frame removes the companion or forgets the device (it uninstalls the companion over adb
-  next) or when it replaces a link. When it forgets a Wireless debugging device, the Frame then
-  writes `adb_wifi_enabled=0` itself over adb, so the device ends up as `bye` would have left it.
+  next) or when it replaces a link. When it forgets any device it can reach, the Frame then writes
+  `adb_wifi_enabled=0` itself over adb. On Android 11+ it first has the device forget its adb key:
+  it pushes the companion APK to `/data/local/tmp` and runs its `Unpair` class with `app_process`
+  as shell (the companion needn't be installed). That ends the adb connection, so it runs detached.
 
 ### Restarting the listener
 

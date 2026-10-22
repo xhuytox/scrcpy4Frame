@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import re
 import struct
@@ -9,6 +11,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import paths
 from .adb import Adb
 
 log = logging.getLogger(__name__)
@@ -242,6 +245,39 @@ def uninstall(adb: Adb, serial: str) -> bool:
 def turn_off_wireless_debugging(adb: Adb, serial: str) -> None:
     """What the companion would do after `bye`. It ends adb over Wi-Fi, so send it last."""
     adb.shell(serial, "settings put global adb_wifi_enabled 0", timeout=5)
+
+
+UNPAIR_APK_REMOTE_PATH = "/data/local/tmp/scrcpy4frame-unpair.apk"
+UNPAIR_CLASS = f"{PACKAGE}.Unpair"
+
+
+def key_fingerprint(public_key: str) -> str:
+    """How Android names an adb key among its paired devices: the key's MD5, as colon-separated hex."""
+    digest = hashlib.md5(base64.b64decode(public_key.split()[0])).hexdigest().upper()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
+def frame_key_fingerprint() -> str:
+    """Fingerprint of the key our adb connects with, or "" if there's none yet."""
+    try:
+        return key_fingerprint((paths.adb_home() / ".android" / "adbkey.pub").read_text())
+    except (OSError, ValueError, IndexError):
+        return ""
+
+
+def unpair_and_turn_off_wireless_debugging(adb: Adb, serial: str, apk: Path, fingerprint: str) -> None:
+    """Forget the Frame's key on the device, as "Forget" under Wireless debugging's paired devices
+    does, then turn Wireless debugging off. Only shell may unpair, so it runs the companion APK's
+    Unpair with app_process; the companion needn't be installed. Unpairing ends every adb connection
+    that uses the key, USB too, so send it last: it runs detached and can't report back."""
+    push = adb.run("push", str(apk), UNPAIR_APK_REMOTE_PATH, serial=serial, timeout=60)
+    if push.rc != 0:
+        log.info("Couldn't push the companion to unpair %s: %s", serial, push.text)
+        turn_off_wireless_debugging(adb, serial)
+        return
+    script = (f"CLASSPATH={UNPAIR_APK_REMOTE_PATH} app_process / {UNPAIR_CLASS} {fingerprint}; "
+              f"rm -f {UNPAIR_APK_REMOTE_PATH}; settings put global adb_wifi_enabled 0")
+    adb.shell(serial, f"nohup sh -c '{script}' >/dev/null 2>&1 &", timeout=5)
 
 
 TILE_COMPONENT = "com.android.settings/.development.qstile.DevelopmentTiles$WirelessDebugging"

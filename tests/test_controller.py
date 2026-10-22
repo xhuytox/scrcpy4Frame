@@ -60,6 +60,10 @@ class FakeAdb:
         self.calls.append(("uninstall", serial, package))
         return self.uninstall_result
 
+    def run(self, *args, serial=None, timeout=15):
+        self.calls.append((args[0], serial, *args[1:]))
+        return CmdResult(0, "", "")
+
     def devices(self):
         return ([DeviceEntry(s, "device") for s in sorted(self.connected)]
                 + [DeviceEntry(s, state) for s, state in sorted(self.usb.items())])
@@ -941,7 +945,7 @@ def test_forgetting_a_device_says_when_its_companion_stays(ctl):
                         "Uninstall it on the device.", "error")]
 
 
-def test_forgetting_a_cable_set_up_device_leaves_wireless_debugging_alone(ctl):
+def test_forgetting_a_cable_set_up_device_turns_off_wireless_debugging_too(ctl):
     from scrcpy4frame import companion
 
     controller, _ = ctl
@@ -951,19 +955,64 @@ def test_forgetting_a_cable_set_up_device_leaves_wireless_debugging_alone(ctl):
     assert controller.devices[0]["status"] == "connected"
     controller.forgetDevice("tcpip-1A2B3C4D")
     assert ("uninstall", "192.168.1.23:5555", companion.PACKAGE) in controller.adb.calls
-    assert not any("adb_wifi_enabled" in str(c) for c in controller.adb.calls)
+    assert ("shell", "192.168.1.23:5555", "settings put global adb_wifi_enabled 0") in controller.adb.calls
 
 
-def test_forgetting_a_device_without_the_companion_only_disconnects(ctl):
+def test_forgetting_a_device_without_the_companion_turns_off_wireless_debugging(ctl):
     controller, _ = ctl
     banners = []
     controller.banner.connect(lambda text, kind: banners.append((text, kind)))
     controller.store.upsert(SavedDevice(id="adb-1A2B3C4D-vWgJpq", serialno="1A2B3C4D"))
     controller._on_services([Service("connect", "adb-1A2B3C4D-vWgJpq", "192.168.1.23", 41235)])
     controller.forgetDevice("adb-1A2B3C4D-vWgJpq")
-    assert not any(c[0] == "uninstall" or "adb_wifi_enabled" in str(c) for c in controller.adb.calls)
-    assert ("disconnect", "192.168.1.23:41235") in controller.adb.calls
+    assert not any(c[0] == "uninstall" for c in controller.adb.calls)
+    steps = [("shell", "192.168.1.23:41235", "settings put global adb_wifi_enabled 0"),
+             ("disconnect", "192.168.1.23:41235")]
+    assert [c for c in controller.adb.calls if c in steps] == steps
     assert controller.devices == [] and banners == []
+
+
+def test_forgetting_a_device_makes_it_forget_our_key_last(ctl, monkeypatch, tmp_path):
+    from scrcpy4frame import companion, paths
+
+    controller, _ = ctl
+    key = paths.adb_home() / ".android" / "adbkey.pub"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("YWJj scrcpy4Frame@SteamFrame\n")
+    apk = tmp_path / "companion.apk"
+    apk.write_bytes(b"apk")
+    monkeypatch.setattr(paths, "companion_apk_path", lambda: apk)
+    device_id = _connected_with_companion(controller)
+    controller.forgetDevice(device_id)
+    serial = "192.168.1.23:41235"
+    unpair = ("shell", serial, "nohup sh -c 'CLASSPATH=/data/local/tmp/scrcpy4frame-unpair.apk app_process / "
+              "io.github.xhuytox.scrcpy4frame.companion.Unpair 90:01:50:98:3C:D2:4F:B0:D6:96:3F:7D:28:E1:7F:72; "
+              "rm -f /data/local/tmp/scrcpy4frame-unpair.apk; settings put global adb_wifi_enabled 0' "
+              ">/dev/null 2>&1 &")
+    steps = [("uninstall", serial, companion.PACKAGE),
+             ("push", serial, str(apk), "/data/local/tmp/scrcpy4frame-unpair.apk"),
+             unpair,
+             ("disconnect", serial)]
+    calls = controller.adb.calls
+    assert [c for c in calls if c in steps] == steps
+    assert not any(c == ("shell", serial, "settings put global adb_wifi_enabled 0") for c in calls)
+
+
+def test_forgetting_an_android_10_device_only_turns_off_wireless_debugging(ctl, monkeypatch, tmp_path):
+    from scrcpy4frame import paths
+
+    controller, _ = ctl
+    key = paths.adb_home() / ".android" / "adbkey.pub"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("YWJj scrcpy4Frame@SteamFrame\n")
+    apk = tmp_path / "companion.apk"
+    apk.write_bytes(b"apk")
+    monkeypatch.setattr(paths, "companion_apk_path", lambda: apk)
+    controller.device_saved(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none", serialno="1A2B3C4D",
+                                        usb_serial="1A2B3C4D", sdk=29))
+    controller.forgetDevice("usb-1A2B3C4D")
+    assert not any(c[0] == "push" or "Unpair" in str(c) for c in controller.adb.calls)
+    assert ("shell", "1A2B3C4D", "settings put global adb_wifi_enabled 0") in controller.adb.calls
 
 
 def test_plugged_in_device_uses_usb_and_falls_back_to_wifi(ctl):
@@ -1021,10 +1070,10 @@ def test_wired_setup_saves_without_a_bogus_wifi_serial(ctl):
     assert rt.wifi_serial == "" and rt.serial == "1A2B3C4D" and controller.devices[0]["status"] == "connected"
 
 
-def test_forgetting_a_wired_device_turns_off_wireless_debugging_it_turned_on(ctl):
+def test_forgetting_a_wired_device_turns_off_wireless_debugging(ctl):
     controller, _ = ctl
-    controller.device_saved(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="wireless", serialno="1A2B3C4D",
-                                        usb_serial="1A2B3C4D", companion=True, app_enabled_wireless_debugging=True))
+    controller.device_saved(SavedDevice(id="usb-1A2B3C4D", setup="wired", method="none", serialno="1A2B3C4D",
+                                        usb_serial="1A2B3C4D"))
     controller.forgetDevice("usb-1A2B3C4D")
     assert ("shell", "1A2B3C4D", "settings put global adb_wifi_enabled 0") in controller.adb.calls
 
