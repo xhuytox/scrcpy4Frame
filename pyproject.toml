@@ -1,6 +1,6 @@
 [project]
 name = "scrcpy4frame"
-version = "1.0.2"
+version = "1.0.3"
 description = "Mirror your Android phone on the Steam Frame with scrcpy"
 readme = "README.md"
 license = "MIT"
