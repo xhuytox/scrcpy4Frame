@@ -37,6 +37,16 @@ constexpr float kSideTurnRadians = 2.0f * 3.14159265f / 180.0f;
 // How long SteamVR Input gets to report the trigger after the laser is switched off.
 constexpr auto kLaserFreeConfirm = std::chrono::milliseconds(300);
 
+// Zoom mode. Pressing or releasing the stick nudges it, so its scroll is ignored this long after a
+// click. The fingers go down once the stick has moved this many units of smooth scroll, and lift
+// once it has sent nothing for kPinchIdle (let go: the stream stops).
+constexpr auto kClickScrollQuiet = std::chrono::milliseconds(150);
+constexpr float kPinchStartUnits = 0.2f;
+constexpr auto kPinchIdle = std::chrono::milliseconds(150);
+// Turning: the laser's angle about the anchor is ignored this close to it (a share of the image's
+// short side), where it jumps about.
+constexpr float kTurnDeadShare = 0.04f;
+
 bool file_exists(const std::string& path) {
   struct stat st {};
   return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
@@ -314,8 +324,10 @@ bool VrPanel::show_frame(const RgbaFrame& frame, std::string& error) {
   bool reshaped = false;
   const float old_foot = foot_m();
   if (frame.width != shown_w_ || frame.height != shown_h_) {
-    // A gesture can't survive a reshape. The server drops it on rotation anyway.
+    // A gesture can't survive a reshape. The server drops it on rotation anyway. Nor can the
+    // zoom anchor: the image under it has moved.
     release_pointer(pending_);
+    if (zoom_) end_zoom(pending_, false);
     if (resizing_) end_resize();
     shown_w_ = frame.width;
     shown_h_ = frame.height;
@@ -330,6 +342,7 @@ bool VrPanel::show_frame(const RgbaFrame& frame, std::string& error) {
   for (uint32_t y = 0; y < shown_h_; ++y) {
     std::memcpy(composite_.data() + y * dst_row, frame.pixels.data() + y * src_row, src_row);
   }
+  if (zoom_) mark_anchor();
   if (!hidden_ && !upload_composite(error)) return false;  // while hidden, only keep the frame
   if (reshaped) {
     apply_geometry();
@@ -361,17 +374,20 @@ void VrPanel::set_chrome(const chrome::State& state) {
   if (state == chrome_state_) return;
   chrome_state_ = state;
   chrome_dirty_ = true;
-  // A static phone screen sends no new frames, so re-upload now.
-  if (has_frame_ && !hidden_) {
-    std::string error;
-    if (!upload_composite(error)) log_warn("panel", "controls refresh failed: " + error);
-  }
+  reupload();
+}
+
+// A static phone screen sends no new frames, so re-upload now.
+void VrPanel::reupload() {
+  if (!has_frame_ || hidden_) return;
+  std::string error;
+  if (!upload_composite(error)) log_warn("panel", "refresh failed: " + error);
 }
 
 // While a control is in use or a finger is down, the other controls don't highlight.
 void VrPanel::update_hover() {
   const bool grabbing = grab_device_ != vr::k_unTrackedDeviceIndexInvalid;
-  const bool busy = grabbing || resizing_ || pointer_down_;
+  const bool busy = grabbing || resizing_ || pointer_down_ || turning_;
   const chrome::Zone z = has_mouse_ ? chrome::zone(chrome_, mouse_x_, mouse_y_, menu_open_) : chrome::Zone::Empty;
   const bool free = !busy && pressed_ == chrome::Zone::Empty;
   chrome::State s;
@@ -405,6 +421,7 @@ void VrPanel::set_hidden(bool hidden) {
   if (hidden) {
     if (countdown_) countdown_->cancel();  // a pending recenter would show it again
     release_pointer(pending_);  // never leave a finger down on the phone
+    if (zoom_) end_zoom(pending_, false);
     if (grab_device_ != vr::k_unTrackedDeviceIndexInvalid) end_grab();
     if (resizing_) end_resize();
     pressed_ = chrome::Zone::Empty;
@@ -831,6 +848,167 @@ float VrPanel::poll_laser_free(float seconds) {
   return 0.0f;
 }
 
+void VrPanel::begin_zoom() {
+  const bool grabbing = grab_device_ != vr::k_unTrackedDeviceIndexInvalid;
+  if (!has_frame_ || hidden_ || !has_mouse_ || grabbing || resizing_ || pointer_down_ ||
+      pressed_ != chrome::Zone::Empty || chrome::zone(chrome_, mouse_x_, mouse_y_, menu_open_) != chrome::Zone::Phone) {
+    return;
+  }
+  zoom_ = true;
+  zoom_anchor_ = phone_point(mouse_x_, mouse_y_);
+  mark_anchor();
+  reupload();
+  log_info("panel", "zoom mode on at " + std::to_string(zoom_anchor_.x) + "," + std::to_string(zoom_anchor_.y));
+}
+
+// Lifts the fingers and takes the anchor away, re-uploading the image if `upload`.
+void VrPanel::end_zoom(std::vector<PanelAction>& out, bool upload) {
+  if (!zoom_) return;
+  end_pinch(out);
+  end_turn(out);
+  zoom_ = false;
+  unmark_anchor();
+  if (upload) reupload();
+  log_info("panel", "zoom mode off");
+}
+
+// A smooth scroll event in zoom mode, `delta` units with positive for stick forward: spreads the
+// fingers (zoom in) or closes them, putting them down first if they aren't. Held past the end of
+// a stroke, the fingers lift and come down again for another, so zoom goes on.
+void VrPanel::zoom_scroll(float delta, std::vector<PanelAction>& out) {
+  const Clock::time_point now = Clock::now();
+  if (now < scroll_quiet_until_ || !std::isfinite(delta)) return;
+  last_pinch_at_ = now;
+  if (!pinch_down_) {
+    // A nudge doesn't put two fingers down, which apps would take for a two-finger tap.
+    pinch_start_units_ += delta;
+    if (std::fabs(pinch_start_units_) < kPinchStartUnits) return;
+    pinch_.start(static_cast<float>(zoom_anchor_.x), static_cast<float>(zoom_anchor_.y), shown_w_, shown_h_,
+                 pinch_start_units_ > 0.0f);
+    pinch_down_ = true;
+    pinch_started_ = now;
+    pinch_events_ = 0;
+    pinch_strokes_ = 1;
+    send_pinch(PanelAction::Type::TouchDown, out);
+    delta = pinch_start_units_;
+    pinch_start_units_ = 0.0f;
+  } else if (pinch_.spent(delta)) {
+    send_pinch(PanelAction::Type::TouchUp, out);
+    pinch_.restart(delta > 0.0f);
+    send_pinch(PanelAction::Type::TouchDown, out);
+    ++pinch_strokes_;
+  }
+  ++pinch_events_;
+  pinch_.add(delta);
+  send_pinch(PanelAction::Type::TouchMove, out);
+}
+
+// Both fingers, as scrcpy's own pinch does: the laser's finger and a virtual one.
+void VrPanel::send_pinch(PanelAction::Type type, std::vector<PanelAction>& out) {
+  for (int i = 0; i < 2; ++i) {
+    PanelAction a;
+    a.type = type;
+    a.pointer_id = i == 0 ? scrcpy::kPointerIdGenericFinger : scrcpy::kPointerIdVirtualFinger;
+    float x = 0.0f, y = 0.0f;
+    pinch_.finger(i, x, y);
+    a.pos = scrcpy::make_position(std::lround(x), std::lround(y), shown_w_, shown_h_);
+    out.push_back(a);
+  }
+}
+
+// Lifts both fingers, logging the pinch for tuning kPinchPerUnit.
+void VrPanel::end_pinch(std::vector<PanelAction>& out) {
+  pinch_start_units_ = 0.0f;
+  if (!pinch_down_) return;
+  pinch_down_ = false;
+  send_pinch(PanelAction::Type::TouchUp, out);
+  char buf[160];
+  std::snprintf(buf, sizeof buf, "pinch %.2f s, %u scroll events, %u stroke(s), ending at %.0f px apart",
+                std::chrono::duration<double>(Clock::now() - pinch_started_).count(), pinch_events_,
+                pinch_strokes_, static_cast<double>(pinch_.span()));
+  log_info("panel", buf);
+}
+
+// The laser's angle about the anchor, in radians from the image's x axis (y down). False while
+// it's too close to the anchor to tell.
+bool VrPanel::turn_angle(float& radians) const {
+  const scrcpy::Position p = phone_point(mouse_x_, mouse_y_);
+  const float dx = static_cast<float>(p.x - zoom_anchor_.x), dy = static_cast<float>(p.y - zoom_anchor_.y);
+  const float dead = kTurnDeadShare * static_cast<float>(std::min(shown_w_, shown_h_));
+  if (dx * dx + dy * dy < dead * dead) return false;
+  radians = std::atan2(dy, dx);
+  return true;
+}
+
+// The trigger on the image in zoom mode: two fingers on a circle about the anchor, lined up with
+// the laser, that turn as it goes round.
+void VrPanel::begin_turn(std::vector<PanelAction>& out) {
+  float radians = 0.0f;
+  turn_angle(radians);  // level if the laser is on the anchor
+  pinch_.start_turn(static_cast<float>(zoom_anchor_.x), static_cast<float>(zoom_anchor_.y), shown_w_, shown_h_,
+                    radians);
+  turning_ = true;
+  turn_last_ = radians;
+  turn_total_ = 0.0f;
+  pinch_started_ = Clock::now();
+  send_pinch(PanelAction::Type::TouchDown, out);
+}
+
+void VrPanel::update_turn(std::vector<PanelAction>& out) {
+  float radians = 0.0f;
+  if (!turn_angle(radians)) return;  // hold still near the anchor
+  float d = radians - turn_last_;
+  if (d > 3.14159265f) d -= 6.28318531f;
+  if (d < -3.14159265f) d += 6.28318531f;
+  turn_total_ += d;
+  turn_last_ = radians;
+  pinch_.aim(radians);
+  send_pinch(PanelAction::Type::TouchMove, out);
+}
+
+void VrPanel::end_turn(std::vector<PanelAction>& out) {
+  if (!turning_) return;
+  turning_ = false;
+  send_pinch(PanelAction::Type::TouchUp, out);
+  char buf[120];
+  std::snprintf(buf, sizeof buf, "turn %.2f s, %+.0f deg, %.0f px across",
+                std::chrono::duration<double>(Clock::now() - pinch_started_).count(),
+                static_cast<double>(turn_total_) * 57.29578, static_cast<double>(pinch_.span()));
+  log_info("panel", buf);
+  update_hover();
+}
+
+// Draws the anchor over the image in composite_, keeping the pixels it covers for unmark_anchor.
+// A new frame overwrites both, so it's called again after each.
+void VrPanel::mark_anchor() {
+  const float cx = static_cast<float>(zoom_anchor_.x) + 0.5f, cy = static_cast<float>(zoom_anchor_.y) + 0.5f;
+  const float reach = chrome::anchor_reach(chrome_);
+  const auto lo = [](float v) { return static_cast<uint32_t>(std::max(0.0f, std::floor(v))); };
+  const uint32_t x0 = lo(cx - reach), y0 = lo(cy - reach);
+  const uint32_t x1 = std::min(shown_w_, lo(cx + reach) + 1), y1 = std::min(shown_h_, lo(cy + reach) + 1);
+  if (x0 >= x1 || y0 >= y1) return;
+  anchor_box_[0] = x0;
+  anchor_box_[1] = y0;
+  anchor_box_[2] = x1 - x0;
+  anchor_box_[3] = y1 - y0;
+  const size_t row = static_cast<size_t>(chrome_.width()) * 4, run = static_cast<size_t>(anchor_box_[2]) * 4;
+  anchor_under_.resize(run * anchor_box_[3]);
+  for (uint32_t y = 0; y < anchor_box_[3]; ++y) {
+    std::memcpy(anchor_under_.data() + y * run, composite_.data() + (y0 + y) * row + x0 * 4, run);
+  }
+  chrome::draw_anchor(composite_.data(), chrome_, cx, cy);
+}
+
+void VrPanel::unmark_anchor() {
+  if (anchor_under_.empty()) return;
+  const size_t row = static_cast<size_t>(chrome_.width()) * 4, run = static_cast<size_t>(anchor_box_[2]) * 4;
+  for (uint32_t y = 0; y < anchor_box_[3]; ++y) {
+    std::memcpy(composite_.data() + (anchor_box_[1] + y) * row + anchor_box_[0] * 4, anchor_under_.data() + y * run,
+                run);
+  }
+  anchor_under_.clear();
+}
+
 void VrPanel::release_pointer(std::vector<PanelAction>& out) {
   if (!pointer_down_) return;
   pointer_down_ = false;
@@ -851,7 +1029,9 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
       mouse_x_ = ev.data.mouse.x;
       mouse_y_ = ev.data.mouse.y;
       has_mouse_ = true;
-      if (pointer_down_) {
+      if (turning_) {
+        update_turn(out);
+      } else if (pointer_down_) {
         a.type = PanelAction::Type::TouchMove;
         a.pos = phone_point(mouse_x_, mouse_y_);
         out.push_back(a);
@@ -868,9 +1048,14 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
       // A click anywhere but the menu closes it, and still does what it does there.
       if (z != chrome::Zone::More && !chrome::is_menu_item(z)) set_menu_open(false);
       if (ev.data.mouse.button & vr::VRMouseButton_Left) {
-        if (grabbing || resizing_ || pointer_down_ || pressed_ != chrome::Zone::Empty) break;
+        if (grabbing || resizing_ || pointer_down_ || turning_ || pressed_ != chrome::Zone::Empty) break;
+        end_pinch(out);  // the trigger takes over from the stick's fingers
         switch (z) {
           case chrome::Zone::Phone:
+            if (zoom_) {
+              begin_turn(out);
+              break;
+            }
             pointer_down_ = true;
             a.type = PanelAction::Type::TouchDown;
             a.pos = phone_point(mouse_x_, mouse_y_);
@@ -892,8 +1077,14 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
         }
         update_hover();
       } else if (ev.data.mouse.button & vr::VRMouseButton_Right) {
-        a.type = PanelAction::Type::Back;
-        out.push_back(a);
+        // The stick's click on the Frame: zoom mode on at the laser, or off. Pressing the stick
+        // nudges it.
+        scroll_quiet_until_ = Clock::now() + kClickScrollQuiet;
+        if (zoom_) {
+          end_zoom(out, true);
+        } else {
+          begin_zoom();
+        }
       } else if (ev.data.mouse.button & vr::VRMouseButton_Middle) {
         a.type = PanelAction::Type::Home;
         out.push_back(a);
@@ -901,11 +1092,14 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
       break;
     }
     case vr::VREvent_MouseButtonUp:
+      if (ev.data.mouse.button & vr::VRMouseButton_Right) scroll_quiet_until_ = Clock::now() + kClickScrollQuiet;
       if (ev.data.mouse.button & vr::VRMouseButton_Left) {
         mouse_x_ = ev.data.mouse.x;
         mouse_y_ = ev.data.mouse.y;
         if (grabbing) {
           end_grab();
+        } else if (turning_) {
+          end_turn(out);
         } else if (resizing_) {
           update_resize();
           end_resize();
@@ -945,6 +1139,9 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
     case vr::VREvent_ScrollSmooth:
       if (grabbing) {
         glide_.add(ev.data.scroll.ydelta);
+      } else if (zoom_) {
+        // Anywhere on the panel: the pinch is at the anchor, not the laser.
+        if (!resizing_ && !pointer_down_ && !turning_) zoom_scroll(ev.data.scroll.ydelta, out);
       } else if (!resizing_ && has_mouse_ &&
                  chrome::zone(chrome_, mouse_x_, mouse_y_, menu_open_) == chrome::Zone::Phone) {
         // A stream of small deltas, one wheel click per unit, as the app's own pages get them
@@ -960,6 +1157,10 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
     case vr::VREvent_FocusLeave:
     case vr::VREvent_OverlayHidden:
       release_pointer(out);  // never leave a finger down on the phone
+      end_pinch(out);
+      end_turn(out);
+      // Zoom mode outlasts the laser leaving the panel, but not the panel going away.
+      if (ev.eventType == vr::VREvent_OverlayHidden && zoom_) end_zoom(out, false);
       if (grabbing) end_grab();
       if (resizing_) end_resize();
       pressed_ = chrome::Zone::Empty;
@@ -991,6 +1192,7 @@ bool VrPanel::poll(std::vector<PanelAction>& out) {
   // Carrying updates every tick (at least every 5 ms), not only on events, so motion is smooth
   // and the panel keeps facing the user.
   const Clock::time_point now = Clock::now();
+  if ((pinch_down_ || pinch_start_units_ != 0.0f) && now - last_pinch_at_ >= kPinchIdle) end_pinch(out);
   const float seconds = std::chrono::duration<float>(now - last_tick_).count();
   last_tick_ = now;
   float push = 0.0f;

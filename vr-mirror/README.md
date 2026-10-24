@@ -42,6 +42,11 @@ JSON-lines protocol on stdin/stdout, the wire format and the panel behaviour are
   - The menu's audio button shows what the app's `audio` command says (casting or not, and
     whether it can be pressed) and asks the app to cast with an `audio_cast` event.
   - The stick scrolls the device with smooth scroll events only: discrete ones tick the haptics.
+  - Clicking the stick with the laser on the device turns zoom mode on, with a ring marking that
+    spot. The stick then pinches two fingers there (forward zooms in) instead of scrolling, the
+    trigger held on the device turns them about it as the laser goes round, and a second click
+    turns it off. Both come through the laser (the click as the right mouse button,
+    the stick as smooth scroll), and the pinch math is `panel::Pinch`.
   - While moving or resizing, the laser is switched off (no beam, no dot), and the trigger, stick
     and pointing pose come from SteamVR Input (`manifest/vr-mirror-actions.json`, bindings for
     the Frame controller). Without them it falls back to the laser and smooth scroll

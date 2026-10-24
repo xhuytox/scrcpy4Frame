@@ -466,6 +466,48 @@ A native helper that shows the device as a SteamVR overlay panel shaped like its
     (its visible screen height in dp) / 64 clicks per unit, both axes. The height comes from
     `screen_long_dp` (the app reads `wm size; wm density` when the session starts, overrides
     first) and the current orientation; 900 dp is assumed if it's unknown.
+- **Zoom mode (pinch):** clicking the stick with the laser on the image turns zoom mode on. A
+  ring with a dot (the anchor) marks where the laser was. Clicking it again with the laser
+  anywhere on the panel takes the anchor away and goes back to scrolling. While it's on, the
+  stick pinches at the anchor instead of scrolling, wherever the laser is on the panel:
+  - **Fingers:** once the stick has moved 0.2 units of smooth scroll (so a nudge isn't a
+    two-finger tap), two fingers go down either side of the anchor: at their closest to zoom in,
+    0.6 of the short side apart to zoom out (or as wide as fits), 1.33x a stroke. Not at their
+    widest, and as close as Android allows (it ignores pinches under 27 mm): a finger
+    coming down on an app's own controls goes to them, and on a Pixel 7 the top one landed on
+    Maps' search bar, so the map saw one finger dragging. Once down on the map, a finger may move
+    over them. They sit along
+    whichever of the horizontal, the vertical and the diagonals leaves them the most room. They
+    keep 0.12 of the image's short side (about 50 dp) from the sides and bottom, where a touch
+    would start Android's gesture navigation instead (Back, Home), and 0.22 (about 90 dp) from
+    the top: on a Pixel 7, a finger 50 dp down closing toward the anchor pulled the notification
+    shade. An anchor nearer an edge than that is moved off it. They are scrcpy's generic
+    finger (-2) and virtual finger (-3), like scrcpy's own Ctrl+drag pinch.
+  - **Stick:** forward spreads them (zoom in), back closes them (zoom out). Each unit of smooth
+    scroll scales the distance by e^0.15 (`panel::kPinchPerUnit`, tune by feel). At their closest
+    they are 0.45 of the short side apart (Android's `ScaleGestureDetector` ignores fingers
+    closer than 27 mm), and at their widest they reach that margin.
+  - **Held:** zoom goes on for as long as the stick is held. When a stroke reaches its end with
+    the stick still pushed, both fingers lift and come down again at the start of a new one, as
+    a hand re-pinches. A stroke shorter than 1.1x (an anchor with no room) isn't repeated.
+  - **Release:** when the stick has sent nothing for 150 ms, both fingers lift. The log gives
+    each pinch's duration, event count and strokes, for tuning. Scroll for 150 ms after a click
+    is ignored, since pressing the stick nudges it.
+  - **Trigger (turning):** held on the image, it puts the two fingers down on a circle about
+    the anchor, lined up with the laser, 0.6 of the short side across (or the widest circle that
+    stays off the edges at any angle). As the laser goes round the anchor, the fingers turn with
+    it, one degree for one, so the device sees a two-finger rotate; within 0.04 of the short side
+    of the anchor its angle isn't used and they hold still. Releasing it lifts them. It first
+    lifts the stick's fingers, and the stick doesn't pinch while it's held. On the controls under
+    the image, the trigger works as usual. The log gives each turn's angle.
+  - **Ends** with a second click, when the panel hides, and when the image changes size
+    (rotation), since the anchor's spot has moved. The laser leaving the panel only lifts the
+    fingers.
+  - **The click** reaches the overlay as the laser's right mouse button (on the Frame, 2026-10-23,
+    the phone logged an injected Back for each click), so it needs no SteamVR Input. It used to
+    be Back; the panel's Back button remains.
+  - **The anchor** is drawn into the texture over the image. The pixels under it are kept and put
+    back when it goes. Each new frame overwrites it, so it's drawn again after each.
 - **Depth while held (laser on):** the stick glides the panel away or closer along the eye-to-panel line
   (0.25–3 m; 0.25–8 m in theater), with no haptic ticks. Each smooth scroll unit adds 0.05 m to a
   distance still to travel (at most 0.15 m). Every main-loop tick covers part of it (an exponential
@@ -534,9 +576,11 @@ A native helper that shows the device as a SteamVR overlay panel shaped like its
 | click elsewhere while the More menu is open | close the menu, then the usual action |
 | click on the Hide button | hide the panel (mirroring continues) |
 | click on the dashboard button | show the hidden panel in front of the user at once (as `recenter`, no countdown); in theater, where it was |
-| right button | Back |
+| right button (stick click) | zoom mode on, anchored at the laser if it's on the image; off if it was on |
 | middle button | Home |
 | smooth scroll on the image | scroll at the last pointer position |
+| smooth scroll in zoom mode (anywhere on the panel) | pinch at the anchor: forward spreads, back closes |
+| left button down / move / up on the image in zoom mode | two fingers turning about the anchor as the laser goes round it |
 | smooth scroll while grabbing | depth (see above) |
 
 - **Registration:** `AddApplicationManifest(<dir>/vr-mirror.vrmanifest)` then `IdentifyApplication(pid,

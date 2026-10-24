@@ -316,7 +316,8 @@ class App {
   bool send(const std::vector<uint8_t>& msg) { return client_.send(msg); }
   void send_back();
   void send_key(uint32_t keycode);
-  void send_touch(TouchAction action, const vrm::scrcpy::Position& pos);
+  void send_touch(TouchAction action, const vrm::scrcpy::Position& pos,
+                  uint64_t pointer_id = vrm::scrcpy::kPointerIdGenericFinger);
 
 #if VR_MIRROR_WITH_OPENVR
   void handle_panel_actions();
@@ -771,9 +772,9 @@ void App::send_key(uint32_t keycode) {
   send(vrm::scrcpy::serialize_keycode(KeyAction::Up, keycode));
 }
 
-void App::send_touch(TouchAction action, const vrm::scrcpy::Position& pos) {
+void App::send_touch(TouchAction action, const vrm::scrcpy::Position& pos, uint64_t pointer_id) {
   const float pressure = action == TouchAction::Up ? 0.0f : 1.0f;
-  send(vrm::scrcpy::serialize_touch(action, vrm::scrcpy::kPointerIdGenericFinger, pos, pressure));
+  send(vrm::scrcpy::serialize_touch(action, pointer_id, pos, pressure));
 }
 
 #if VR_MIRROR_WITH_OPENVR
@@ -787,9 +788,9 @@ void App::handle_panel_actions() {
   }
   for (const vrm::PanelAction& a : actions) {
     switch (a.type) {
-      case vrm::PanelAction::Type::TouchDown: send_touch(TouchAction::Down, a.pos); break;
-      case vrm::PanelAction::Type::TouchMove: send_touch(TouchAction::Move, a.pos); break;
-      case vrm::PanelAction::Type::TouchUp: send_touch(TouchAction::Up, a.pos); break;
+      case vrm::PanelAction::Type::TouchDown: send_touch(TouchAction::Down, a.pos, a.pointer_id); break;
+      case vrm::PanelAction::Type::TouchMove: send_touch(TouchAction::Move, a.pos, a.pointer_id); break;
+      case vrm::PanelAction::Type::TouchUp: send_touch(TouchAction::Up, a.pos, a.pointer_id); break;
       case vrm::PanelAction::Type::Scroll:
         send(vrm::scrcpy::serialize_scroll(a.pos, a.hscroll, a.vscroll));
         break;

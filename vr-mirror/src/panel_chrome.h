@@ -100,4 +100,10 @@ struct State {
 // straight alpha, tightly packed, top-down. Phone image pixels are left untouched.
 void draw(uint8_t* texture, const Layout& l, const State& s);
 
+// Zoom mode's anchor, drawn over the phone image at (x, y) in texture pixels: a white ring with a
+// dot in it, edged in dark so it shows on any content. Pixels outside the image are left untouched.
+// anchor_reach is how far its pixels go from (x, y).
+float anchor_reach(const Layout& l);
+void draw_anchor(uint8_t* texture, const Layout& l, float x, float y);
+
 }  // namespace vrm::chrome

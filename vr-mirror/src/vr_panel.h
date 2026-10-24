@@ -26,11 +26,13 @@ namespace vrm {
 class Countdown;
 
 // `pos` is in pixels of the frame currently shown, whose size is the w x h the server expects.
+// Touches are the laser's finger unless `pointer_id` says otherwise (a pinch's second finger).
 // AudioCast asks the app to turn audio casting `on` or off.
 struct PanelAction {
   enum class Type { TouchDown, TouchMove, TouchUp, Scroll, Back, Home, AppSwitch, AudioCast };
   Type type = Type::TouchMove;
   scrcpy::Position pos;
+  uint64_t pointer_id = scrcpy::kPointerIdGenericFinger;
   float hscroll = 0.0f;
   float vscroll = 0.0f;
   bool on = false;
@@ -139,6 +141,18 @@ class VrPanel {
   void set_carrying(bool carrying);
   void finish_action();
   void init_input(const std::string& actions_path);
+  void begin_zoom();
+  void end_zoom(std::vector<PanelAction>& out, bool upload);
+  void zoom_scroll(float delta, std::vector<PanelAction>& out);
+  void send_pinch(PanelAction::Type type, std::vector<PanelAction>& out);
+  void end_pinch(std::vector<PanelAction>& out);
+  bool turn_angle(float& radians) const;
+  void begin_turn(std::vector<PanelAction>& out);
+  void update_turn(std::vector<PanelAction>& out);
+  void end_turn(std::vector<PanelAction>& out);
+  void mark_anchor();
+  void unmark_anchor();
+  void reupload();
   void begin_laser_free(vr::TrackedDeviceIndex_t device);
   void end_laser_free();
   float poll_laser_free(float seconds);
@@ -215,6 +229,27 @@ class VrPanel {
   bool aim_started_ = false;    // aim_x0_/aim_y0_ hold the first aim point of this resize
   float aim_x0_ = 0.0f;
   float aim_y0_ = 0.0f;
+
+  // Zoom mode: a stick click on the image anchors it, the stick pinches there, the trigger held
+  // on the image turns there, and another click ends it. All reach the overlay through the laser:
+  // the click as the right mouse button, the stick as smooth scroll.
+  bool zoom_ = false;
+  scrcpy::Position zoom_anchor_;
+  std::chrono::steady_clock::time_point scroll_quiet_until_{};  // a click nudges the stick
+  panel::Pinch pinch_;
+  bool pinch_down_ = false;      // both fingers are on the phone
+  float pinch_start_units_ = 0.0f;  // stick travel before the fingers go down
+  std::chrono::steady_clock::time_point last_pinch_at_{};
+  std::chrono::steady_clock::time_point pinch_started_{};
+  unsigned pinch_events_ = 0;
+  unsigned pinch_strokes_ = 0;
+  // The trigger in zoom mode turns the fingers about the anchor instead (pinch_ again).
+  bool turning_ = false;
+  float turn_last_ = 0.0f;   // the laser's last angle about the anchor, radians
+  float turn_total_ = 0.0f;  // for the log
+  // The image pixels under the anchor's marker, to put back when it goes: x, y, w, h.
+  std::vector<uint8_t> anchor_under_;
+  uint32_t anchor_box_[4] = {0, 0, 0, 0};
 
   bool pointer_down_ = false;
   bool has_mouse_ = false;

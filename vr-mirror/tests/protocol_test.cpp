@@ -388,6 +388,11 @@ void test_serialize_touch() {
               {0x02, 0x02, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x03, 0x5f,
                0x00, 0x00, 0x07, 0x7f, 0x03, 0x60, 0x07, 0x80, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
                0x00, 0x00, 0x00, 0x00});
+  // A pinch's second finger is scrcpy's virtual finger (-3).
+  CHECK_BYTES(scrcpy::serialize_touch(TouchAction::Down, scrcpy::kPointerIdVirtualFinger, q, 1.0f),
+              {0x02, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x64,
+               0x00, 0x00, 0x00, 0xc8, 0x01, 0x68, 0x02, 0x80, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00});
 }
 
 void test_serialize_scroll() {
@@ -823,6 +828,25 @@ void test_panel_chrome() {
   CHECK(px(open, mx + r * 0.5f, l.bar_cy, 0) < 40);
   CHECK_EQ(px(idle, mx, gap_y, 3), 0);
   CHECK(px(open, mx + r + l.tray_pad * 0.5f, l.button_cy, 3) > 150);   // around More too
+
+  // Zoom mode's anchor: a white ring and dot edged in dark over the phone image, hollow between
+  // them, and never past the image's edge.
+  {
+    std::vector<uint8_t> a(idle.size(), 128);
+    const float ax = w / 2.0f, ay = h / 2.0f, ring = l.button_r * 0.45f, reach = chrome::anchor_reach(l);
+    chrome::draw_anchor(a.data(), l, ax, ay);
+    CHECK(px(a, ax, ay, 0) > 240);                     // the dot,
+    CHECK(px(a, ax + ring, ay, 0) > 240);              // the ring,
+    CHECK(px(a, ax, ay - ring, 0) > 240);
+    CHECK_EQ(px(a, ax + ring / 2.0f, ay, 0), 128);     // the image showing between them,
+    CHECK(px(a, ax + ring + l.stroke_r / 2.0f + 1.5f, ay, 0) < 100);  // a dark edge outside,
+    CHECK_EQ(px(a, ax + reach + 1.0f, ay, 0), 128);    // nothing past its reach
+    std::vector<uint8_t> edge(idle.size(), 128);
+    chrome::draw_anchor(edge.data(), l, w - 1.0f, h - 1.0f);
+    CHECK(px(edge, w - 1, h - 1, 0) > 240);
+    CHECK_EQ(px(edge, w + 1, h - 3, 0), 128);          // not on the margin column
+    CHECK_EQ(px(edge, w - 3, h + 1, 0), 128);          // nor the controls under the image
+  }
   CHECK_EQ(px(open, mx - r - l.tray_pad - 3, my, 3), 0);                // and no further left
   CHECK(px(open, mx, my + r + l.tray_pad * 0.5f, 3) > 150);             // below the row
   const float last = l.menu_cx(chrome::kMenuSize - 1);
@@ -939,6 +963,125 @@ void test_panel_chrome() {
   CHECK(ui::digit_3_icon(dr * 0.2f, dr * 0.2f, dr) > 0.9f);
   CHECK(ui::digit_3_icon(-dr * 0.2f, -dr * 0.03f, dr) < 0.1f);  // open on the left
   CHECK(ui::digit_2_icon(0.0f, dr * 0.4f, dr) > 0.9f);         // 2: its base
+}
+
+void test_pinch() {
+  const auto fingers = [](const panel::Pinch& p, float& x0, float& y0, float& x1, float& y1) {
+    p.finger(0, x0, y0);
+    p.finger(1, x1, y1);
+  };
+  float x0, y0, x1, y1;
+  // Portrait 864 x 1920 (a Pixel 7's stream). The fingers keep 0.12 of the short side (103.68 px)
+  // from the sides and bottom and 0.22 (190.08 px) from the top, where the notification shade
+  // is: the area they use is x 103.68..759.32, y 190.08..1815.32.
+  const double edge = 0.12 * 864, top = 0.22 * 864, min_span = 0.45 * 864;
+  // Anchored in the middle: one above the other (the most room), centred on the anchor. Zooming
+  // in starts at their closest.
+  panel::Pinch p;
+  p.start(432.0f, 960.0f, 864, 1920, true);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(p.span(), min_span, 1e-3);
+  CHECK_NEAR(x0, 432.0, 1e-3);
+  CHECK_NEAR(x1, 432.0, 1e-3);
+  CHECK_NEAR((y0 + y1) / 2.0f, 960.0, 1e-3);
+  CHECK_NEAR(y1 - y0, p.span(), 1e-3);
+  // Forward spreads by exp(kPinchPerUnit) per unit, back closes as much.
+  p.add(1.0f);
+  CHECK_NEAR(p.span(), min_span * std::exp(panel::kPinchPerUnit), 1e-2);
+  p.add(-1.0f);
+  CHECK_NEAR(p.span(), min_span, 1e-2);
+  // At their closest, closing further is past the end of the stroke; spreading isn't.
+  CHECK(p.spent(-0.1f));
+  CHECK(!p.spent(0.1f));
+  // Spread as far as they go: the top one stops at the top margin, the bottom one as far from
+  // the anchor. Then the stroke is spent and another starts closest.
+  for (int i = 0; i < 100; ++i) p.add(1.0f);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(y0, top, 1e-2);
+  CHECK_NEAR(y1, 960.0 + (960.0 - top), 1e-2);
+  CHECK(y1 <= 1919.0 - edge);
+  CHECK(p.spent(0.1f));
+  CHECK(!p.spent(-0.1f));
+  CHECK(!p.spent(0.0f));
+  p.restart(true);
+  CHECK_NEAR(p.span(), min_span, 1e-3);
+  // Zooming out starts 0.6 of the short side apart, not at their widest, which would put the top
+  // finger on an app's toolbar. Closed to their closest, the stroke is spent and starts over.
+  p.start(432.0f, 960.0f, 864, 1920, false);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(p.span(), 0.6 * 864, 1e-2);
+  CHECK_NEAR(y0, 960.0 - 0.3 * 864, 1e-2);
+  CHECK(!p.spent(-0.1f));
+  for (int i = 0; i < 100; ++i) p.add(-1.0f);
+  CHECK_NEAR(p.span(), min_span, 1e-2);
+  CHECK(p.spent(-0.1f));
+  p.restart(false);
+  CHECK_NEAR(p.span(), 0.6 * 864, 1e-2);
+  // Where 0.6 doesn't fit, as wide as fits: 150 px past the side margin, with no room vertically.
+  p.start(253.68f, 190.08f, 864, 1920, false);
+  CHECK_NEAR(p.span(), 300.0, 1e-2);
+  p.add(std::nanf(""));
+  CHECK(std::isfinite(p.span()));
+  // Near the top edge: the anchor moves down off it, and the fingers go side by side.
+  p.start(432.0f, 30.0f, 864, 1920, true);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(y0, top, 1e-3);
+  CHECK_NEAR(y1, top, 1e-3);
+  CHECK_NEAR(p.span(), min_span, 1e-3);
+  // Near the bottom edge: moved up by the smaller margin.
+  p.start(432.0f, 1915.0f, 864, 1920, true);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(y0, 1919.0 - edge, 1e-2);
+  // In a corner nothing fits: both fingers on the (moved) anchor, and no strokes to repeat.
+  p.start(10.0f, 10.0f, 864, 1920, true);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(p.span(), 0.0, 1e-3);
+  CHECK_NEAR(x0, edge, 1e-3);
+  CHECK_NEAR(y1, top, 1e-3);
+  p.add(5.0f);
+  CHECK(!p.spent(1.0f));
+  CHECK(!p.spent(-1.0f));
+  // Landscape: the short side is the height, and side by side has the most room.
+  p.start(960.0f, 432.0f, 1920, 864, true);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(p.span(), min_span, 1e-3);
+  CHECK_NEAR(y0, 432.0, 1e-3);
+  // Outside the image (a rotation race): the anchor is moved onto it, off the edges.
+  p.start(5000.0f, -5.0f, 864, 1920, false);
+  fingers(p, x0, y0, x1, y1);
+  CHECK(x0 <= 759.33f && x1 <= 759.33f && y0 >= 190.07f && y1 >= 190.07f);
+  // Turning: fingers 0.6 of the short side across, centred on the anchor, along the angle, and
+  // the same span at any angle, all off the edges.
+  p.start_turn(432.0f, 960.0f, 864, 1920, 0.0f);
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(p.span(), 0.6 * 864, 1e-3);
+  CHECK_NEAR(y0, 960.0, 1e-3);
+  CHECK_NEAR(x1 - x0, 0.6 * 864, 1e-3);
+  p.aim(1.5707963f);  // a quarter turn clockwise on screen (y down): one above the other
+  fingers(p, x0, y0, x1, y1);
+  CHECK_NEAR(x0, 432.0, 1e-2);
+  CHECK_NEAR(y1 - y0, 0.6 * 864, 1e-2);
+  CHECK_NEAR(p.span(), 0.6 * 864, 1e-3);
+  for (float a = 0.0f; a < 6.3f; a += 0.1f) {
+    p.aim(a);
+    fingers(p, x0, y0, x1, y1);
+    CHECK(x0 >= edge - 1e-2 && x1 <= 863.0 - edge + 1e-2 && y0 >= top - 1e-2 && y1 >= top - 1e-2);
+  }
+  p.aim(std::nanf(""));
+  fingers(p, x0, y0, x1, y1);
+  CHECK(std::isfinite(x0) && std::isfinite(y1));
+  // Turning, like zooming, never strokes on: the stick can't move a turn's fingers.
+  CHECK(!p.spent(1.0f));
+  p.add(3.0f);
+  CHECK_NEAR(p.span(), 0.6 * 864, 1e-3);
+  // Near a side the circle shrinks to fit: 50 px past the margin leaves 100 px across.
+  p.start_turn(static_cast<float>(edge) + 50.0f, 960.0f, 864, 1920, 0.0f);
+  CHECK_NEAR(p.span(), 100.0, 1e-2);
+
+  // An image too small for the margins: they share it, and nothing is NaN.
+  p.start(1.0f, 1.0f, 3, 2, true);
+  fingers(p, x0, y0, x1, y1);
+  CHECK(std::isfinite(x0) && std::isfinite(y0) && x0 >= 0.0f && x0 <= 2.0f && y0 >= 0.0f && y0 <= 1.0f);
 }
 
 void test_depth_glide() {
@@ -1458,6 +1601,7 @@ int main() {
   test_panel_math();
   test_panel_chrome();
   test_depth_glide();
+  test_pinch();
   test_resize();
   test_laser_free_math();
   test_facing();

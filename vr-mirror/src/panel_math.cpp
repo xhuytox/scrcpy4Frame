@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 
 namespace vrm::panel {
 
@@ -326,6 +327,84 @@ float DepthGlide::take(float seconds) {
 }
 
 void DepthGlide::reset() { *this = DepthGlide(); }
+
+// The area the fingers may use, and the anchor moved into it. On an image too small for both
+// margins of an axis, they share it in proportion.
+void Pinch::place(float x, float y, uint32_t w, uint32_t h) {
+  short_ = static_cast<float>(std::min(w, h));
+  const float edge = kPinchEdgeShare * short_, top_edge = kPinchTopEdgeShare * short_;
+  const float width = std::max(static_cast<float>(w) - 1.0f, 0.0f);
+  const float height = std::max(static_cast<float>(h) - 1.0f, 0.0f);
+  const float sx = edge > 0.0f ? std::min(1.0f, width / (2.0f * edge)) : 1.0f;
+  const float sy = edge > 0.0f ? std::min(1.0f, height / (top_edge + edge)) : 1.0f;
+  left_ = edge * sx;
+  right_ = width - edge * sx;
+  top_ = top_edge * sy;
+  bottom_ = height - edge * sy;
+  x_ = std::clamp(x, left_, right_);
+  y_ = std::clamp(y, top_, bottom_);
+}
+
+void Pinch::start(float x, float y, uint32_t w, uint32_t h, bool spreading) {
+  place(x, y, w, h);
+  // How far the fingers can each go from the anchor along (dx, dy) and stay in the area.
+  const auto room = [&](float dx, float dy) {
+    float t = std::numeric_limits<float>::max();
+    if (dx != 0.0f) t = std::min(t, std::min(x_ - left_, right_ - x_) / std::fabs(dx));
+    if (dy != 0.0f) t = std::min(t, std::min(y_ - top_, bottom_ - y_) / std::fabs(dy));
+    return std::max(t, 0.0f);
+  };
+  constexpr float kDiagonal = 0.70710678f;
+  const float dirs[4][2] = {{1.0f, 0.0f}, {0.0f, 1.0f}, {kDiagonal, kDiagonal}, {kDiagonal, -kDiagonal}};
+  float best = -1.0f;
+  for (const auto& d : dirs) {
+    const float r = room(d[0], d[1]);
+    if (r > best) {
+      best = r;
+      dx_ = d[0];
+      dy_ = d[1];
+    }
+  }
+  max_ = 2.0f * best;
+  min_ = std::min(kPinchMinSpanShare * short_, max_);
+  restart(spreading);
+}
+
+void Pinch::start_turn(float x, float y, uint32_t w, uint32_t h, float radians) {
+  place(x, y, w, h);
+  // The largest circle around the anchor that stays in the area, so any angle fits.
+  const float fits = 2.0f * std::max(0.0f, std::min({x_ - left_, right_ - x_, y_ - top_, bottom_ - y_}));
+  span_ = min_ = max_ = std::min(kPinchTurnSpanShare * short_, fits);
+  aim(radians);
+}
+
+void Pinch::aim(float radians) {
+  if (!std::isfinite(radians)) return;
+  dx_ = std::cos(radians);
+  dy_ = std::sin(radians);
+}
+
+float Pinch::out_start() const { return std::clamp(kPinchOutStartShare * short_, min_, max_); }
+
+void Pinch::restart(bool spreading) { span_ = spreading ? min_ : out_start(); }
+
+void Pinch::add(float delta) {
+  if (!std::isfinite(delta)) return;
+  span_ = std::clamp(span_ * std::exp(kPinchPerUnit * delta), min_, max_);
+}
+
+bool Pinch::spent(float delta) const {
+  constexpr float kMinStroke = 1.1f;  // a stroke shorter than this is no zoom worth repeating
+  if (delta > 0.0f) return max_ > min_ * kMinStroke && span_ >= max_;
+  if (delta < 0.0f) return out_start() > min_ * kMinStroke && span_ <= min_;
+  return false;
+}
+
+void Pinch::finger(int i, float& x, float& y) const {
+  const float half = (i == 0 ? -0.5f : 0.5f) * span_;
+  x = x_ + half * dx_;
+  y = y_ + half * dy_;
+}
 
 std::string format_pose(const Mat34& m) {
   std::string out;

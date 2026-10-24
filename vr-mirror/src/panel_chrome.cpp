@@ -194,4 +194,28 @@ void draw(uint8_t* texture, const Layout& l, const State& s) {
   if (s.menu_open) draw_menu(texture, l, s);
 }
 
+namespace {
+
+constexpr float kAnchorRingFraction = 0.45f;  // ring radius / button radius
+constexpr float kAnchorEdge = 2.0f;           // dark edge around the white strokes, px
+constexpr float kAnchorEdgeAlpha = 0.6f;
+
+}  // namespace
+
+float anchor_reach(const Layout& l) {
+  return l.button_r * kAnchorRingFraction + l.stroke_r + kAnchorEdge + 2.0f;
+}
+
+void draw_anchor(uint8_t* texture, const Layout& l, float x, float y) {
+  const float ring = l.button_r * kAnchorRingFraction, stroke = l.stroke_r;
+  const float reach = anchor_reach(l);
+  for_box(texture, l, x, y, reach, reach, [&](float px, float py, uint8_t* p) {
+    if (px >= static_cast<float>(l.image_w) || py >= static_cast<float>(l.image_h)) return;
+    const float d = std::hypot(px - x, py - y);
+    const float sd = std::min(std::fabs(d - ring) - stroke / 2.0f, d - stroke);  // ring, dot
+    over(p, 0, 0, 0, kAnchorEdgeAlpha * coverage(sd - kAnchorEdge));
+    over(p, 255, 255, 255, coverage(sd));
+  });
+}
+
 }  // namespace vrm::chrome

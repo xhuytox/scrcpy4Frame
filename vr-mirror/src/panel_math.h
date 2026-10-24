@@ -180,6 +180,67 @@ class DepthGlide {
   float pending_m_ = 0.0f;
 };
 
+// Zoom mode's pinch: two fingers either side of an anchor on the phone image, spread or closed by
+// the stick. Spans are shares of the image's short side. Android's ScaleGestureDetector ignores
+// fingers closer than 27 mm (config_minScalingSpan), and a phone's short side is 62 to 75 mm.
+constexpr float kPinchMinSpanShare = 0.45f;
+// The fingers keep this far from the image's edges, where a touch would start Android's gesture
+// navigation (Back from the sides, Home from the bottom) instead: about 50 dp. From the top
+// edge, where a finger moving down pulls the notification shade, they keep about 90 dp, clear of
+// the status bar and any camera cutout (seen on a Pixel 7 at 50 dp, 2026-10-24).
+constexpr float kPinchEdgeShare = 0.12f;
+constexpr float kPinchTopEdgeShare = 0.22f;
+// Each unit of smooth scroll scales the span by exp(kPinchPerUnit). Tune by feel.
+constexpr float kPinchPerUnit = 0.15f;
+// Zooming out starts the fingers this far apart, close to the anchor and not at their widest: a
+// finger coming down on an app's own controls (Maps' search bar, at the top) goes to them, and the
+// map sees one finger dragging (on a Pixel 7, 2026-10-24). Once down on the map, a finger may move
+// over them. Strokes are short (1.33x), so a held stick chains many.
+constexpr float kPinchOutStartShare = 0.6f;
+// Fingers turning about the anchor are this far apart, or less if that circle doesn't fit.
+constexpr float kPinchTurnSpanShare = 0.6f;
+
+// The fingers spread from their closest (zoom in) or close from kPinchOutStartShare of the short
+// side (zoom out). A stick held past the end of a stroke starts another (restart), so zoom goes on
+// for as long as it's held.
+class Pinch {
+ public:
+  // Centres the fingers on (x, y) in a w x h image (pixels, top-down), moved off the edges, along
+  // whichever of the horizontal, the vertical and the diagonals leaves them most room. They start
+  // at their closest if `spreading`, otherwise kPinchOutStartShare of the short side apart (less
+  // if that doesn't fit).
+  void start(float x, float y, uint32_t w, uint32_t h, bool spreading);
+  // Spreads the fingers (positive, stick forward: zoom in) or closes them by `delta` units of
+  // smooth scroll, kPinchMinSpanShare of the short side apart at least (less if that doesn't fit)
+  // and off the edges.
+  void add(float delta);
+  // Whether `delta` would push the fingers past the end of their stroke, so a new stroke should
+  // take over: false if there's no room for one.
+  bool spent(float delta) const;
+  // A new stroke at the same place, as start would begin it.
+  void restart(bool spreading);
+  // For turning instead: the fingers on a circle about the anchor (moved as for start),
+  // kPinchTurnSpanShare of the short side across or as much as stays off the edges at any angle,
+  // along `radians` from the image's x axis (y down).
+  void start_turn(float x, float y, uint32_t w, uint32_t h, float radians);
+  // Turns the fingers to lie along `radians`, keeping their span.
+  void aim(float radians);
+  // Finger 0 or 1, in pixels.
+  void finger(int i, float& x, float& y) const;
+  float span() const { return span_; }
+
+ private:
+  float x_ = 0.0f, y_ = 0.0f;    // anchor
+  float dx_ = 1.0f, dy_ = 0.0f;  // unit direction from finger 0 to finger 1
+  float span_ = 0.0f;
+  float min_ = 0.0f, max_ = 0.0f;
+  float short_ = 0.0f;
+  float left_ = 0.0f, right_ = 0.0f, top_ = 0.0f, bottom_ = 0.0f;  // where the fingers may go
+
+  void place(float x, float y, uint32_t w, uint32_t h);
+  float out_start() const;
+};
+
 // Mat34 <-> 12 comma-separated row-major floats. parse_pose rejects input unless all 12 parse
 // and the rotation is orthonormal, so a corrupt saved pose is ignored.
 std::string format_pose(const Mat34& m);

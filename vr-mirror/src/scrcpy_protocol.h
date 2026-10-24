@@ -114,6 +114,7 @@ enum class KeyAction : uint8_t { Down = 0, Up = 1 };
 
 constexpr uint64_t kPointerIdMouse = UINT64_C(0xFFFFFFFFFFFFFFFF);          // -1
 constexpr uint64_t kPointerIdGenericFinger = UINT64_C(0xFFFFFFFFFFFFFFFE);  // -2
+constexpr uint64_t kPointerIdVirtualFinger = UINT64_C(0xFFFFFFFFFFFFFFFD);  // -3, a pinch's second finger
 
 // Android key codes used by the panel.
 constexpr uint32_t kKeycodeHome = 3;
