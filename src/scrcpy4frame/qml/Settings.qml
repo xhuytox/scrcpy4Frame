@@ -92,6 +92,18 @@ Flickable {
 
         Card {
             Layout.fillWidth: true
+            SectionTitle { text: "Connection" }
+            ToggleRow {
+                topDivider: false
+                label: "Switch between USB and Wi-Fi automatically"
+                description: "Plugging in connects over USB and unplugging connects over Wi-Fi."
+                checked: settingsPage.s.auto_switch
+                onToggled: (on) => app.setSetting("auto_switch", on)
+            }
+        }
+
+        Card {
+            Layout.fillWidth: true
             SectionTitle { text: "Device while connected" }
             ToggleRow {
                 topDivider: false

@@ -47,7 +47,9 @@ The app asks how you want to set up your device: **Wireless** or **Wired**.
 - (optional) Install companion app
 
 Once set up, a device uses the cable when it's plugged in and Wi-Fi when it isn't. A Wired device gets
-Wi-Fi on its own when it's on the same network as the Frame.
+Wi-Fi on its own when it's on the same network as the Frame. To keep a connection on the transport it
+started on, turn off "Switch between USB and Wi-Fi automatically" in Settings. A device on both then
+has "Connect over USB" and "Connect over Wi-Fi" buttons.
 
 ## Building
 

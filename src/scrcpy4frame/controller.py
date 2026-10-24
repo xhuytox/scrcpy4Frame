@@ -620,8 +620,8 @@ class AppController(QObject):
 
     def _maybe_move_mirror_to_usb(self, device: SavedDevice, rt: Runtime) -> None:
         """The cable wins, even over a running mirror: plugged in during a Wi-Fi mirror, it restarts over USB."""
-        if (device.id != self._mirror_device or rt.usb_state != "device" or not is_tcp_serial(self._mirror_serial)
-                or self._mirror_to_usb == device.id):
+        if (not self.settings.value.auto_switch or device.id != self._mirror_device or rt.usb_state != "device"
+                or not is_tcp_serial(self._mirror_serial) or self._mirror_to_usb == device.id):
             return
         log.info("%s is plugged in: restarting its mirror over USB", device.id)
         self._mirror_to_usb = device.id
@@ -636,7 +636,8 @@ class AppController(QObject):
         """A USB mirror ended. If its cable was pulled and the device has Wi-Fi, carry on there; the
         failure message is kept back until that's known."""
         device, rt = self.store.get(device_id), self.runtime.get(device_id)
-        if self._mirror_stopped or device is None or rt is None or device.method == NONE:
+        if (not self.settings.value.auto_switch or self._mirror_stopped or device is None or rt is None
+                or device.method == NONE):
             return False
         now = time.monotonic()
         self._mirror_to_wifi = {"device": device_id, "message": message, "retry": retry_smaller,
@@ -649,14 +650,16 @@ class AppController(QObject):
         waiting = self._mirror_to_wifi
         if waiting is None or waiting["device"] != device.id or self._polls <= waiting["polls"]:
             return                          # decide on a fresh `adb devices`, not the one from before
+        auto = self.settings.value.auto_switch
         # The device must answer over Wi-Fi after the unplug: it may have left Wi-Fi while plugged in.
-        if rt.via == "wifi" and rt.wifi_answered_at >= waiting["since"]:
+        if auto and rt.via == "wifi" and rt.wifi_answered_at >= waiting["since"]:
             self._mirror_to_wifi = None
             log.info("%s was unplugged: continuing its mirror over Wi-Fi", device.id)
             self._announce_switch("Unplugged: switching to Wi-Fi.")
             self.mirror(device.id)
-        elif rt.usb_state == "device" or now >= waiting["until"]:
-            # Still plugged in (it dropped for another reason), or no Wi-Fi came: say what happened.
+        elif not auto or rt.usb_state == "device" or now >= waiting["until"]:
+            # Still plugged in (it dropped for another reason), no Wi-Fi came, or switching was turned
+            # off meanwhile: say what happened.
             self._mirror_to_wifi = None
             self._mirror_message, self._mirror_retry_smaller = waiting["message"], waiting["retry"]
             self.mirroringChanged.emit()
@@ -945,6 +948,8 @@ class AppController(QObject):
             via = rt.via
             if device.id == self._mirror_device and self._mirror_serial:
                 via = "wifi" if is_tcp_serial(self._mirror_serial) else "usb"
+            elif self._both_ways(rt):
+                via = "both"                # the card offers a Connect button for each
             out.append({
                 "id": device.id, "name": device.display_name, "model": device.model,
                 "manufacturer": device.manufacturer, "release": device.android_release,
@@ -1084,8 +1089,17 @@ class AppController(QObject):
         if self._wizard_active:
             self.wizard.tick()
 
+    def _both_ways(self, rt: Runtime) -> bool:
+        """With automatic switching off, a device on both USB and Wi-Fi lets the user pick one."""
+        return not self.settings.value.auto_switch and rt.usb_state == "device" and bool(rt.wifi_serial)
+
     @Slot(str)
     def mirror(self, device_id: str) -> None:
+        self.mirrorOver(device_id, "")
+
+    @Slot(str, str)
+    def mirrorOver(self, device_id: str, via: str) -> None:
+        """Mirrors over `via` ("usb" | "wifi") when the user may pick, else over the connection in use."""
         if self.mirroring or self._switching(device_id):
             return
         device = self.store.get(device_id)
@@ -1093,10 +1107,11 @@ class AppController(QObject):
         if device is None or rt is None or rt.status != "connected":
             self.banner.emit("That device isn't ready yet.", "error")
             return
+        serial = rt.wifi_serial if via == "wifi" and self._both_ways(rt) else rt.serial
         if vrmirror.available():
-            self._mirror_vr(device, rt.serial)
+            self._mirror_vr(device, serial)
         else:
-            self._mirror_window(device, rt.serial)
+            self._mirror_window(device, serial)
 
     def _open_screen_control(self, serial: str) -> None:
         self._close_screen_control()
@@ -1518,6 +1533,8 @@ class AppController(QObject):
             self.mirroringChanged.emit()
         if changed:
             self.settingsChanged.emit()
+        if key == "auto_switch":
+            self._update_statuses()     # turned on, a Wi-Fi mirror with the cable in moves to USB now
 
     @Slot(str)
     def muteApp(self, package: str) -> None:

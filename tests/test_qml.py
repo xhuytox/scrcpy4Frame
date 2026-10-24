@@ -215,3 +215,30 @@ def test_audio_buffer_says_50_ms_is_for_usb(ui):
     assert any("50 ms is only recommended over USB" in t for t in shown_texts(engine))
     engine.rootObjects()[0].setProperty("page", "home")
     settle(app)
+
+
+def test_device_on_both_shows_a_connect_button_for_each(ui):
+    from scrcpy4frame.controller import Runtime
+    from scrcpy4frame.devices import SavedDevice
+
+    app, controller, engine, warnings = ui
+    engine.rootObjects()[0].setProperty("page", "home")
+    device = SavedDevice(id="adb-BOTH-abcdef", model="Both", sdk=35, method="wireless")
+    controller.store.upsert(device)
+    controller.runtime[device.id] = Runtime(wifi_serial="192.168.1.9:5555", usb_serial="BOTH",
+                                            usb_state="device", status="connected")
+    controller.settings.value.auto_switch = False
+    controller.devicesChanged.emit()
+    settle(app)
+    texts = shown_texts(engine)
+    assert "Connect over USB" in texts and "Connect over Wi-Fi" in texts
+    assert any("USB  ·  Wi-Fi" in t for t in texts)
+    controller.settings.value.auto_switch = True
+    controller.devicesChanged.emit()
+    settle(app)
+    assert "Connect over Wi-Fi" not in shown_texts(engine)
+    controller.store.remove(device.id)
+    controller.runtime.pop(device.id)
+    controller.devicesChanged.emit()
+    settle(app)
+    assert warnings == [], warnings

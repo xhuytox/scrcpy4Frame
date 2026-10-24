@@ -1527,3 +1527,71 @@ def test_unplugged_mirror_waits_for_the_device_to_answer_over_wifi(vr_phone, def
     deferred.flush()                                       # the device answers
     wifi = FakeVrSession.instances[-1]
     assert wifi is not usb and wifi.serial == "192.168.1.23:41235"
+
+
+def test_with_switching_off_plugging_in_keeps_the_wifi_mirror(vr_phone):
+    controller, device_id = vr_phone
+    controller.setSetting("auto_switch", False)
+    controller.mirror(device_id)
+    wifi = FakeVrSession.instances[-1]
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    assert FakeVrSession.instances[-1] is wifi and not wifi.stopped and controller.banners == []
+    assert controller.devices[0]["via"] == "wifi"           # the mirror's, though the cable is in
+
+
+def test_with_switching_off_unplugging_ends_the_usb_mirror(vr_phone):
+    controller, device_id = vr_phone
+    controller.setSetting("auto_switch", False)
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirrorOver(device_id, "usb")
+    usb = FakeVrSession.instances[-1]
+    assert usb.serial == "1A2B3C4D"
+    del controller.adb.usb["1A2B3C4D"]
+    usb.ended.emit("disconnected", "connection closed by the device")
+    assert FakeVrSession.instances[-1] is usb and controller.banners == []
+    assert "unplugged" in controller.mirrorStatus["message"]
+
+
+def test_with_switching_off_a_device_on_both_lets_the_user_pick(vr_phone):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    assert controller.devices[0]["via"] == "usb"            # switching on: the cable wins
+    controller.mirrorOver(device_id, "wifi")
+    assert FakeVrSession.instances[-1].serial == "1A2B3C4D"
+    controller.stopMirror()
+    controller.setSetting("auto_switch", False)
+    row = controller.devices[0]
+    assert row["via"] == "both" and row["host"] == "192.168.1.23"
+    controller.mirrorOver(device_id, "wifi")
+    assert FakeVrSession.instances[-1].serial == "192.168.1.23:41235"
+
+
+def test_turning_switching_on_moves_a_wifi_mirror_to_the_cable(vr_phone):
+    controller, device_id = vr_phone
+    controller.setSetting("auto_switch", False)
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    controller.mirrorOver(device_id, "wifi")
+    wifi = FakeVrSession.instances[-1]
+    controller.setSetting("auto_switch", True)
+    usb = FakeVrSession.instances[-1]
+    assert wifi.stopped and usb is not wifi and usb.serial == "1A2B3C4D"
+    assert controller.banners == [SWITCH_TO_USB]
+
+
+def test_turning_switching_off_while_waiting_for_wifi_reports_the_unplug(vr_phone, deferred):
+    controller, device_id = vr_phone
+    controller.adb.usb["1A2B3C4D"] = "device"
+    controller._on_entries(controller.adb.devices())
+    deferred.flush()
+    controller.mirror(device_id)
+    usb = FakeVrSession.instances[-1]
+    del controller.adb.usb["1A2B3C4D"]
+    usb.ended.emit("disconnected", "connection closed by the device")
+    controller.setSetting("auto_switch", False)
+    deferred.flush()
+    assert FakeVrSession.instances[-1] is usb and controller._mirror_to_wifi is None
+    assert "unplugged" in controller.mirrorStatus["message"]

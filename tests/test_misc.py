@@ -310,6 +310,11 @@ def test_audio_buffer_no_longer_offered_goes_back_to_the_default(tmp_path):
     assert SettingsStore(tmp_path / "settings.json").value.audio_buffer_ms == 150
 
 
+def test_switching_between_usb_and_wifi_is_on_by_default(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({"bitrate_mbps": 8}))      # saved before the setting
+    assert SettingsStore(tmp_path / "settings.json").value.auto_switch is True
+
+
 def test_renamed_settings_keep_their_value(tmp_path):
     (tmp_path / "settings.json").write_text(json.dumps({"suppress_while_mirroring": False, "audio": True}))
     value = SettingsStore(tmp_path / "settings.json").value

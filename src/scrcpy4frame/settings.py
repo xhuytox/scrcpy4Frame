@@ -20,6 +20,7 @@ class Settings:
     audio_buffer_ms: int = 100             # scrcpy --audio-buffer for audio casting: one of AUDIO_BUFFERS_MS
     turn_screen_off: bool = False          # blank the phone's display. The phone keeps running.
     keep_active: bool = True
+    auto_switch: bool = True               # plugging in moves a mirror to USB, unplugging to Wi-Fi
     panel_size: str = "medium"             # small | medium | large: the VR panel's size when it opens
     dashboard_button: bool = True          # button under the SteamVR dashboard that shows a hidden panel
     # Notifications (companion only)

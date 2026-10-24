@@ -22,6 +22,7 @@ Flickable {
         "unplugged": "Plug your device into the Frame",
         "usb_waiting": "Plugged in"
     })
+    readonly property var viaText: ({ "usb": "USB", "wifi": "Wi-Fi", "both": "USB  ·  Wi-Fi" })
 
     ColumnLayout {
         id: body
@@ -119,7 +120,7 @@ Flickable {
                             Layout.fillWidth: true
                             text: [deviceCard.d.manufacturer,
                                    deviceCard.d.release ? "Android " + deviceCard.d.release : "",
-                                   deviceCard.d.via === "usb" ? "USB" : deviceCard.d.via === "wifi" ? "Wi-Fi" : "",
+                                   home.viaText[deviceCard.d.via] || "",
                                    deviceCard.d.host].filter(function (s) { return s }).join("  ·  ")
                             color: theme.textDim
                             font.pixelSize: theme.fontSmall
@@ -311,10 +312,26 @@ Flickable {
                 ButtonGrid {
                     visible: !deviceCard.d.mirroring
                     BigButton {
+                        visible: deviceCard.d.via !== "both"
                         kind: "primary"
                         text: "Connect"
                         enabled: deviceCard.d.status === "connected" && !app.mirroring
                         onClicked: app.mirror(deviceCard.d.id)
+                    }
+                    // Automatic switching is off and the device is on both: the user picks one.
+                    BigButton {
+                        visible: deviceCard.d.via === "both"
+                        kind: "primary"
+                        text: "Connect over USB"
+                        enabled: !app.mirroring
+                        onClicked: app.mirrorOver(deviceCard.d.id, "usb")
+                    }
+                    BigButton {
+                        visible: deviceCard.d.via === "both"
+                        kind: "primary"
+                        text: "Connect over Wi-Fi"
+                        enabled: !app.mirroring
+                        onClicked: app.mirrorOver(deviceCard.d.id, "wifi")
                     }
                     BigButton {
                         visible: deviceCard.d.status === "off" && deviceCard.d.method === "wireless"
