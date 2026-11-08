@@ -124,6 +124,26 @@ Mat34 inverse_rigid(const Mat34& m);
 // to [kMinDistanceMeters, max_distance].
 Mat34 push_away(const Mat34& pose, const Vec3& eye, float delta, float max_distance = kMaxDistanceMeters);
 
+// Carrying by the laser alone (no controller pose): where the centre of `pose` goes so that the
+// point grabbed at (grab_x, grab_y) is back under the laser, now at (x, y). Both are metres from
+// the centre in the panel's plane (x right, y down). The panel slides in its own plane, `share`
+// of the way there.
+Vec3 dragged_to(const Mat34& pose, float grab_x, float grab_y, float x, float y, float share = 1.0f);
+
+// `p` moved along the line from `eye` to `distance` m from it; `p` itself if it's on `eye`. A laser
+// drag keeps the panel as far from the head as it was when grabbed (the stick changes that): only
+// sliding in its plane, it drifts away fast, mostly when moved up and down past
+// kUprightWithinRadians, where its plane tilts away.
+Vec3 at_distance(const Vec3& p, const Vec3& eye, float distance);
+float distance(const Vec3& a, const Vec3& b);
+
+// The share of the way a laser drag goes each time the laser moves. SteamVR reports where the
+// laser meets the panel as the panel was when it looked, so going all the way could make the
+// panel swing about the laser for good if that's a move behind; less than all the way settles
+// (|swing| shrinks by sqrt(share) per move) at the cost of trailing the laser a little. Tune by
+// feel.
+constexpr float kDragFollowShare = 0.6f;
+
 // Recenter waits this long, counting down, so the user can look where the panel should go.
 constexpr float kRecenterCountdownSeconds = 3.0f;
 // The number to show `elapsed` seconds into the countdown: 3, 2, 1, then 0 when it's over.

@@ -241,6 +241,24 @@ Mat34 push_away(const Mat34& pose, const Vec3& eye, float delta, float max_dista
   return r;
 }
 
+Vec3 dragged_to(const Mat34& pose, float grab_x, float grab_y, float x, float y, float share) {
+  const float dx = (x - grab_x) * share, dy = (grab_y - y) * share;  // y up, along the panel's own Y
+  if (!std::isfinite(dx) || !std::isfinite(dy)) return translation(pose);
+  return {pose.m[0][3] + pose.m[0][0] * dx + pose.m[0][1] * dy, pose.m[1][3] + pose.m[1][0] * dx + pose.m[1][1] * dy,
+          pose.m[2][3] + pose.m[2][0] * dx + pose.m[2][1] * dy};
+}
+
+float distance(const Vec3& a, const Vec3& b) {
+  return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+}
+
+Vec3 at_distance(const Vec3& p, const Vec3& eye, float d) {
+  const float now = distance(p, eye);
+  if (now < 1e-4f || !std::isfinite(now) || !std::isfinite(d)) return p;
+  const float k = d / now;
+  return {eye.x + (p.x - eye.x) * k, eye.y + (p.y - eye.y) * k, eye.z + (p.z - eye.z) * k};
+}
+
 float resize_scale(float grab_x, float grab_y, float x, float y) {
   const float g2 = grab_x * grab_x + grab_y * grab_y;
   if (!(g2 > 0.0f)) return 1.0f;

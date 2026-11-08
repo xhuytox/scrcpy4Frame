@@ -59,10 +59,6 @@ bool centre_pose(vr::IVROverlay* ov, vr::VROverlayHandle_t h, panel::Mat34& pose
   return dash::split_scale(from_vr(m), pose, scale);
 }
 
-float distance(const panel::Vec3& a, const panel::Vec3& b) {
-  return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
-}
-
 }  // namespace
 
 DashBar::~DashBar() { release_overlay(); }
@@ -221,7 +217,7 @@ bool DashBar::place() {
   // holds still, so it doesn't swivel when the head moves.
   const Clock::time_point now = Clock::now();
   const panel::Vec3 at = panel::translation(bar);
-  if (distance(at, bar_pos_) > kMoveEpsilonMeters) {
+  if (panel::distance(at, bar_pos_) > kMoveEpsilonMeters) {
     bar_pos_ = at;
     bar_moved_at_ = now;
   }

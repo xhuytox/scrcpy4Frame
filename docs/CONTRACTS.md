@@ -414,6 +414,15 @@ A native helper that shows the device as a SteamVR overlay panel shaped like its
   reports the new pose.
   - **In theater** it moves the same way, off the floor too. Only the stick's range is larger:
     0.25–8 m from the head.
+  - **While SteamVR's keyboard is open** apps get no controller poses (SteamVR's Keyboard
+    Privacy setting, on by default; resize never needed them). The bar then drags the panel by
+    the laser instead (`VrPanel::begin_drag`): every tick the panel slides in its own plane
+    toward putting the point grabbed back under the laser (`panel::dragged_to`, 60 % of the way
+    per laser move, `kDragFollowShare`, so it can't swing about the laser), then goes back to its
+    distance from the head when it was grabbed (`panel::at_distance`), which the stick changes
+    (smooth scroll, `panel::DepthGlide`), and it keeps facing the user from the head's pose. Only
+    sliding in its plane, it drifted away about 0.25 m per sweep up and down, tilting past 25°. The
+    laser stays on, and the trigger's release (or the laser leaving the panel) ends it.
 - **Theater:** the More menu's Theater button sets the long side to `theater_size_m` (3.5 m;
   not a Settings choice) and moves the panel 3.8 m straight ahead along the head's level heading,
   **standing on the floor:** upright, the phone screen's bottom edge at the standing universe's
@@ -453,7 +462,8 @@ A native helper that shows the device as a SteamVR overlay panel shaped like its
   - `/in/aim` (`/pose/tip`): when resizing, the corner moves by as much as the point it aims at
     on the panel's plane moved since the start.
   - **Fallbacks** keep the laser path below: inside the dashboard (its laser can't be switched
-    off), without the action files or handles, or for a hand that isn't left/right. If the
+    off), without the action files or handles, for a hand that isn't left/right, or while the
+    hand has no pose (SteamVR's keyboard is open, see Moving it). If the
     trigger isn't reported within 0.3 s (or stops being reported), the laser comes back and the
     action goes on with overlay events. If a drag ends twice without the trigger ever showing as
     held, the laser stays on for the rest of the session.

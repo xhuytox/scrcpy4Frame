@@ -1445,6 +1445,86 @@ void test_grab_math() {
              panel::kMaxTheaterDistanceMeters, 1e-4);
   CHECK_NEAR(dist(panel::push_away(pose, eye, 2.0f, panel::kMaxTheaterDistanceMeters)), d0 + 2.0, 1e-4);
 
+  // Dragging by the laser (no controller pose): the grabbed point lands where the laser now meets
+  // the panel, which slides in its own plane. Points are x right, y down from the centre.
+  {
+    const panel::Vec3 c0 = panel::translation(pose);
+    const panel::Vec3 still = panel::dragged_to(pose, 0.02f, 0.17f, 0.02f, 0.17f);
+    CHECK_NEAR(still.x, c0.x, 1e-6);
+    CHECK_NEAR(still.y, c0.y, 1e-6);
+    CHECK_NEAR(still.z, c0.z, 1e-6);
+    // World position of a panel point (x right, y down) with the centre at `c`.
+    auto world = [&](const panel::Vec3& c, float x, float y) {
+      return panel::Vec3{c.x + pose.m[0][0] * x - pose.m[0][1] * y, c.y + pose.m[1][0] * x - pose.m[1][1] * y,
+                         c.z + pose.m[2][0] * x - pose.m[2][1] * y};
+    };
+    const float gx = 0.02f, gy = 0.17f, lx = 0.12f, ly = 0.05f;  // laser moved right and up
+    const panel::Vec3 c1 = panel::dragged_to(pose, gx, gy, lx, ly);
+    const panel::Vec3 grabbed = world(c1, gx, gy), laser = world(c0, lx, ly);
+    CHECK_NEAR(grabbed.x, laser.x, 1e-5);
+    CHECK_NEAR(grabbed.y, laser.y, 1e-5);
+    CHECK_NEAR(grabbed.z, laser.z, 1e-5);
+    // In the plane: no motion along the normal.
+    const double along_normal =
+        (c1.x - c0.x) * pose.m[0][2] + (c1.y - c0.y) * pose.m[1][2] + (c1.z - c0.z) * pose.m[2][2];
+    CHECK_NEAR(along_normal, 0.0, 1e-6);
+    // Laser up on the panel moves it up along its own Y.
+    const double up = (c1.x - c0.x) * pose.m[0][1] + (c1.y - c0.y) * pose.m[1][1] + (c1.z - c0.z) * pose.m[2][1];
+    CHECK_NEAR(up, gy - ly, 1e-5);
+    // Part of the way: the same direction, `share` as far.
+    const panel::Vec3 part = panel::dragged_to(pose, gx, gy, lx, ly, 0.6f);
+    CHECK_NEAR(part.x - c0.x, 0.6 * (c1.x - c0.x), 1e-6);
+    CHECK_NEAR(part.y - c0.y, 0.6 * (c1.y - c0.y), 1e-6);
+    CHECK_NEAR(part.z - c0.z, 0.6 * (c1.z - c0.z), 1e-6);
+    CHECK(panel::kDragFollowShare > 0.25f && panel::kDragFollowShare < 1.0f);  // settles, without ringing slowly
+    const panel::Vec3 bad = panel::dragged_to(pose, gx, gy, std::nanf(""), ly);
+    CHECK_NEAR(bad.x, c0.x, 1e-6);
+    CHECK_NEAR(bad.y, c0.y, 1e-6);
+    CHECK_NEAR(bad.z, c0.z, 1e-6);
+  }
+  // at_distance: along the line from the eye.
+  {
+    const panel::Vec3 e{0.0f, 1.6f, 0.0f};
+    const panel::Vec3 p = panel::at_distance(panel::Vec3{0.3f, 1.6f, -0.4f}, e, 1.0f);
+    CHECK_NEAR(p.x, 0.6, 1e-5);
+    CHECK_NEAR(p.y, 1.6, 1e-5);
+    CHECK_NEAR(p.z, -0.8, 1e-5);
+    CHECK_NEAR(panel::distance(p, e), 1.0, 1e-5);
+    const panel::Vec3 on = panel::at_distance(e, e, 1.0f);  // on the eye: unchanged
+    CHECK_NEAR(on.y, 1.6, 1e-6);
+  }
+  // A laser drag swept up and down (as update_drag: dragged_to, at_distance, then facing the eye
+  // with the tilt animation) stays as far from the eye as it started. Only sliding in its plane, it
+  // went 0.25 m farther per sweep (Steam Frame, 2026-11-07).
+  {
+    const panel::Vec3 e{0.0f, 1.6f, 0.0f}, right{1.0f, 0.0f, 0.0f}, hand{0.15f, 1.2f, -0.25f};
+    const panel::Vec3 content{-0.012f, 0.03f, 0.0f};
+    const float gx = 0.0f, gy = 0.18f, pi = 3.14159265f;  // grabbed on the bar
+    panel::TiltAnimation tilt;
+    tilt.reset(false);
+    panel::Mat34 p = panel::facing_upright(panel::Vec3{0.0f, 1.5f, -0.65f}, e, right, content);
+    const float d0 = panel::distance(panel::translation(p), e);
+    auto sweep = [&](bool keep) {
+      for (int cycle = 0; cycle < 3; ++cycle) {
+        for (int i = 0; i < 180; ++i) {  // -10 to +60 degrees and back over 2 s, at 90 Hz
+          const float elev = (-10.0f + 70.0f * (0.5f - 0.5f * std::cos(2.0f * pi * i / 180.0f))) * pi / 180.0f;
+          float x = 0.0f, y = 0.0f;
+          if (!panel::ray_on_panel(p, panel::translation(p), hand, panel::Vec3{0.0f, std::sin(elev), -std::cos(elev)},
+                                   x, y)) {
+            continue;
+          }
+          panel::Vec3 at = panel::dragged_to(p, gx, gy, x, y, panel::kDragFollowShare);
+          if (keep) at = panel::at_distance(at, e, d0);
+          p = panel::facing_tilted(at, e, tilt.update(panel::past_upright(at, e, right, content), 1.0f / 90.0f), right,
+                                   content);
+        }
+      }
+      return panel::distance(panel::translation(p), e);
+    };
+    CHECK_NEAR(sweep(true), d0, 1e-3);
+    CHECK(sweep(false) > d0 + 0.3f);  // what at_distance prevents
+  }
+
   // Recenter's countdown: 3, 2, 1, then over.
   CHECK_NEAR(panel::kRecenterCountdownSeconds, 3.0, 1e-6);
   CHECK_EQ(panel::countdown_left(0.0f), 3);
