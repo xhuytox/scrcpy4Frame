@@ -1,6 +1,6 @@
 # scrcpy4Frame: mirror an Android phone on the Valve Steam Frame (SteamOS, aarch64).
-# Bundles adb, scrcpy, FFmpeg and the OpenVR helpers. Versions and sources are in modules/.
-# 6.11 is the newest KDE runtime + PySide BaseApp pair Flathub publishes for aarch64.
+# Bundles adb, scrcpy, FFmpeg, the OpenVR helpers, and PySide6 with its own Qt. Versions and
+# sources are in modules/. The app doesn't use the runtime's Qt: see modules/pyside6.yml.
 #
 # Build from the repo root (needs dist/companion.apk):
 #   flatpak run org.flatpak.Builder --user --install --force-clean --install-deps-from=flathub \
@@ -11,8 +11,6 @@ id: io.github.xhuytox.Scrcpy4Frame
 runtime: org.kde.Platform
 runtime-version: '6.11'
 sdk: org.kde.Sdk
-base: io.qt.PySide.BaseApp
-base-version: '6.11'
 command: scrcpy4frame
 
 finish-args:
@@ -34,15 +32,6 @@ finish-args:
   # flatpak-spawn --host for the OpenVR helpers (OpenVR init fails in the sandbox's PID namespace),
   # and to install an update and restart into it.
   - --talk-name=org.freedesktop.Flatpak
-
-build-options:
-  env:
-    # Drop the BaseApp's QtWebEngine and NumPy, which the app doesn't use.
-    BASEAPP_REMOVE_WEBENGINE: '1'
-    BASEAPP_DISABLE_NUMPY: '1'
-
-cleanup-commands:
-  - /app/cleanup-BaseApp.sh
 
 cleanup:
   - /include
@@ -83,7 +72,8 @@ modules:
   # SteamVR phone panel helper
   - modules/vr-mirror.yml
 
-  # Python dependencies (PySide6 comes from the BaseApp)
+  # PySide6 and its Qt, then the other Python dependencies
+  - modules/pyside6.yml
   - modules/python3-deps.yml
 
   - name: scrcpy4frame
@@ -106,6 +96,9 @@ modules:
       - type: script
         dest-filename: scrcpy4frame-launcher
         commands:
+          # The runtime points these at plugins and QML modules built for its own Qt, which
+          # PySide6's Qt can't load. Without them, PySide6's Qt uses only its own.
+          - unset QT_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
           - export PYTHONPATH="/app/lib/scrcpy4frame${PYTHONPATH:+:$PYTHONPATH}"
           - exec python3 -m scrcpy4frame "$@"
       # Built by scripts/build-companion.sh.

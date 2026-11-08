@@ -1,0 +1,80 @@
+# PySide6 from PyPI's wheels, which carry their own Qt (in site-packages/PySide6/Qt, found through
+# RUNPATH). The app must not use the runtime's Qt: PySide6 links Qt's private API, and since Qt 6.10
+# each private symbol names the exact Qt patch release (QObjectPrivate(QtPrivate_6_11_2)). A PySide6
+# built against org.kde.Platform's Qt, like io.qt.PySide.BaseApp's, stops loading as soon as Flathub
+# moves the runtime to the next Qt patch release, and a bundle can't pin a runtime commit (issue #3).
+# With the wheels, the runtime only provides non-Qt libraries, whose ABI doesn't change in a branch.
+#
+# Essentials has QtCore/Gui/Network/Qml/Quick/QuickControls2. Of Addons, only Qt Multimedia's module
+# and library are unpacked, for the notification chime. QSoundEffect plays through PulseAudio without a
+# backend plugin; the wheel's FFmpeg plugin can't load here anyway (its FFmpeg needs libbz2.so.1.0,
+# the runtime only has libbz2.so.1). Keep the three versions equal; unzip fails if a file is gone.
+name: pyside6
+buildsystem: simple
+build-commands:
+  - >-
+    pip3 install --verbose --no-index --no-build-isolation --find-links="file://${PWD}"
+    --prefix=${FLATPAK_DEST} shiboken6==6.11.3 PySide6_Essentials==6.11.3
+  - >-
+    unzip -o -q pyside6_addons-6.11.3-*.whl -d "$(python3 -c 'import sysconfig;
+    print(sysconfig.get_path("platlib", vars={"base": "/app", "platbase": "/app"}))')"
+    PySide6/QtMultimedia.abi3.so
+    PySide6/Qt/lib/libQt6Multimedia.so.6
+  # Developer tools and build-time files, never loaded by the app.
+  - >-
+    cd "$(python3 -c 'import sysconfig;
+    print(sysconfig.get_path("platlib", vars={"base": "/app", "platbase": "/app"}))')/PySide6" &&
+    rm -rf assistant designer linguist lrelease lupdate qmlformat qmllint qmlls svgtoqml
+    doc glue include lib scripts typesystems
+    Qt/libexec Qt/metatypes Qt/translations
+    Qt/plugins/designer Qt/plugins/qmllint Qt/plugins/qmltooling Qt/plugins/sqldrivers
+    Qt/lib/libQt6Designer.so.6 Qt/lib/libQt6DesignerComponents.so.6 Qt/lib/libQt6Help.so.6
+    Qt/lib/libQt6UiTools.so.6 QtDesigner.abi3.so QtHelp.abi3.so QtUiTools.abi3.so &&
+    find . -name '*.pyi' -delete
+  # Essentials also has plugins and QML plugins for Addons modules that aren't installed (Pdf, 3D,
+  # VirtualKeyboard, ...). They would load those modules, and with them more Qt, from the runtime.
+  # Then nothing in PySide6 may need a Qt library from outside it, or the issue #3 crash comes back,
+  # nor a library that can't be found.
+  - >-
+    cd "$(python3 -c 'import sysconfig;
+    print(sysconfig.get_path("platlib", vars={"base": "/app", "platbase": "/app"}))')/PySide6" &&
+    for f in $(find Qt/plugins Qt/qml -name '*.so'); do
+    if ldd "$f" 2>/dev/null | grep -qE 'libQt6[^ ]* => (/usr/|not found)'; then echo "removing $f"; rm "$f"; fi;
+    done &&
+    for f in $(find . -name '*.so*' -type f); do
+    if ldd "$f" 2>/dev/null | grep -E 'libQt6[^ ]* => /usr/|not found'; then echo "error: $f"; exit 1; fi;
+    done
+cleanup:
+  # pip's pyside6-* launchers for the tools removed above.
+  - /bin
+sources:
+  - type: file
+    url: https://files.pythonhosted.org/packages/fc/e2/ce5f54d6bc8950fed935e61c1ade6537869fe6913517eef0d5f91140f5cc/shiboken6-6.11.3-cp310-abi3-manylinux_2_39_aarch64.whl
+    sha256: 01d172ec9599fed315aec025b1424ff945ae5358f87588a848797616a18de6e7
+    only-arches:
+      - aarch64
+  - type: file
+    url: https://files.pythonhosted.org/packages/db/5b/51501ef59ad1ee97d9efa945e23a4f09b0e164ab8d869ea142b7bb7bc736/pyside6_essentials-6.11.3-cp310-abi3-manylinux_2_39_aarch64.whl
+    sha256: b7d77901d5fb413e96788cb15c56177cbbad0ff12605c716abdc79eabe4ba859
+    only-arches:
+      - aarch64
+  - type: file
+    url: https://files.pythonhosted.org/packages/42/78/1432b9c3bf72eb28d4f78a995c5aeecae8fc5ba848af29b5c8d99e91ef34/pyside6_addons-6.11.3-cp310-abi3-manylinux_2_39_aarch64.whl
+    sha256: 6d536493003c5f409ba1bf52d8053e23f9c97f291e2a347a676902bfe0a1a31e
+    only-arches:
+      - aarch64
+  - type: file
+    url: https://files.pythonhosted.org/packages/7c/4a/696e3a9ed26436b1b41ca22dd21e7bce214ba1a1e1dea5c84b5627444c65/shiboken6-6.11.3-cp310-abi3-manylinux_2_34_x86_64.whl
+    sha256: e601c957011345c741b88f661a12486f478db881d6777bdf37e3dc7a8d3387c6
+    only-arches:
+      - x86_64
+  - type: file
+    url: https://files.pythonhosted.org/packages/91/23/9692f9b9a7cf89c0e8b99da228a728064aa827dc115b5dc974156bcf14fc/pyside6_essentials-6.11.3-cp310-abi3-manylinux_2_34_x86_64.whl
+    sha256: c6a5c3b58bf55aef6e09a7de690ff6133335014ab81a7f22f56363ea08e8f6a3
+    only-arches:
+      - x86_64
+  - type: file
+    url: https://files.pythonhosted.org/packages/00/f1/d1313576cb6ee71d02d4d5762401f70310319ffe3b2a650b8d3101e4b07f/pyside6_addons-6.11.3-cp310-abi3-manylinux_2_34_x86_64.whl
+    sha256: 5cab663fbff1b7a1fa7e641754de3ca1ea410407fc70bd4e240144b42d09a69c
+    only-arches:
+      - x86_64

@@ -28,7 +28,9 @@ the Flatpak packaging (`flatpak/`). If you change something here, update every s
 | `/app/share/scrcpy4frame/companion.apk` | companion APK (built by `scripts/build-companion.sh` into `dist/companion.apk`) |
 | `/app/bin/vr-toast` | OpenVR overlay helper, statically linked against openvr_api and libstdc++ so it can also run on the host |
 
-Python deps (`zeroconf`, `ifaddr`, `jeepney`) are installed into `/app` with pip. PySide6 comes from `io.qt.PySide.BaseApp`.
+Python deps (`zeroconf`, `ifaddr`, `jeepney`) are installed into `/app` with pip. PySide6 is installed the same way
+from PyPI's wheels, which carry their own Qt (`flatpak/modules/pyside6.yml`). Don't build it against the runtime's Qt,
+for example with `io.qt.PySide.BaseApp`: it then breaks at the runtime's next Qt patch release (issue #3).
 
 ## GitHub release assets
 

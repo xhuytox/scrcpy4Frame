@@ -9,7 +9,7 @@ readonly SCRIPT_DIR REPO_ROOT
 readonly APP_ID="io.github.xhuytox.Scrcpy4Frame"
 readonly MANIFEST="flatpak/$APP_ID.yml"
 readonly FLATHUB_REPO="https://dl.flathub.org/repo/flathub.flatpakrepo"
-# Keep in sync with runtime-version/base-version in the manifest.
+# Keep in sync with runtime-version in the manifest.
 readonly KDE_VERSION="6.11"
 
 usage() {
@@ -35,8 +35,7 @@ Anything after "--" is passed to flatpak-builder, e.g. -- --keep-build-dirs
 Steps:
   1. scripts/build-companion.sh, if dist/companion.apk is missing
   2. sync the repo to <workdir>/src on the Frame (no .git, .venv or build outputs)
-  3. install org.flatpak.Builder, org.kde.Platform/Sdk//$KDE_VERSION and
-     io.qt.PySide.BaseApp//$KDE_VERSION from Flathub (--user)
+  3. install org.flatpak.Builder and org.kde.Platform/Sdk//$KDE_VERSION from Flathub (--user)
   4. flatpak run org.flatpak.Builder --user --install --force-clean
        --install-deps-from=flathub --repo=<workdir>/repo <workdir>/build-dir $MANIFEST
   5. with --bundle: flatpak build-bundle, then copy dist/scrcpy4frame-<arch>.flatpak back
@@ -138,7 +137,7 @@ else
     remote "rm -rf $(printf '%q' "$WORK/src") && mkdir -p $(printf '%q' "$WORK/src") && tar --warning=no-unknown-keyword -xzf - -C $(printf '%q' "$WORK/src")"
 fi
 
-log "Installing org.flatpak.Builder and the $KDE_VERSION runtime/SDK/BaseApp (--user)"
+log "Installing org.flatpak.Builder and the $KDE_VERSION runtime/SDK (--user)"
 remote_script "$FLATHUB_REPO" "$KDE_VERSION" "$WORK" <<'REMOTE'
 set -euo pipefail
 flathub_repo="$1"; kde="$2"; work="$3"
@@ -146,7 +145,7 @@ command -v flatpak >/dev/null 2>&1 || { echo "flatpak is not installed on this d
 flatpak remote-add --user --if-not-exists flathub "$flathub_repo"
 flatpak install --user --or-update -y --noninteractive flathub \
   org.flatpak.Builder \
-  "org.kde.Platform//$kde" "org.kde.Sdk//$kde" "io.qt.PySide.BaseApp//$kde"
+  "org.kde.Platform//$kde" "org.kde.Sdk//$kde"
 avail_kb="$(df -Pk "$work" | awk 'NR==2 {print $4}')"
 if [ -n "$avail_kb" ] && [ "$avail_kb" -lt $((8 * 1024 * 1024)) ]; then
   echo "warning: only $((avail_kb / 1024)) MiB free under $work; the build needs roughly 8 GiB" >&2
