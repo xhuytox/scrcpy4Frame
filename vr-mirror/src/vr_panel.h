@@ -4,6 +4,8 @@
 // carries the panel with the controller (stick for depth), turning it to face the user as it
 // goes, and the corner bracket resizes it around its centre. While either is
 // active the laser is switched off and input comes from SteamVR Input (see begin_laser_free).
+// While SteamVR's keyboard is open, apps get no controller poses, so the bar drags the panel by
+// the laser instead (begin_drag).
 // The More button opens a menu with Theater, which stands the panel on the floor 3.8 m ahead at a
 // larger size, Recenter, and audio casting. Recenter counts down first (countdown.h).
 #pragma once
@@ -129,12 +131,16 @@ class VrPanel {
   void handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& out);
   vr::TrackedDeviceIndex_t resolve_pointer_device(vr::TrackedDeviceIndex_t device) const;
   bool device_pose(vr::TrackedDeviceIndex_t device, panel::Mat34& pose) const;
+  bool carrying() const { return grab_device_ != vr::k_unTrackedDeviceIndexInvalid || dragging_; }
   void begin_grab(vr::TrackedDeviceIndex_t device);
   void end_grab();
   void update_grab(float push_m, float seconds);
+  void begin_drag();
+  void end_drag();
+  void update_drag(float push_m, float seconds);
   panel::Mat34 aimed(const panel::Vec3& at, float seconds);
   void begin_resize(vr::TrackedDeviceIndex_t device);
-  void resize_pointer(float& x, float& y) const;
+  void laser_point(float& x, float& y) const;
   void update_resize();
   void update_resize_to(float x, float y);
   void end_resize();
@@ -205,6 +211,15 @@ class VrPanel {
   panel::Vec3 aim_right_{};
   std::chrono::steady_clock::time_point last_tick_{};
   std::chrono::steady_clock::time_point grab_started_{};
+
+  // Carrying by the laser instead (begin_drag): the point grabbed, in metres from the centre
+  // (x right, y down), follows the laser.
+  bool dragging_ = false;
+  bool drag_moved_ = false;  // the laser has moved since the last tick
+  float drag_x_ = 0.0f;
+  float drag_y_ = 0.0f;
+  float drag_distance_ = 0.0f;  // from the head, kept while dragging (0: not known yet)
+  unsigned drag_events_ = 0;  // laser moves, for the log
 
   bool resizing_ = false;
   float resize_long0_ = 0.0f;  // long side when the corner was grabbed

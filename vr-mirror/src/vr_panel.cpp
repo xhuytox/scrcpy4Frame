@@ -329,6 +329,7 @@ bool VrPanel::show_frame(const RgbaFrame& frame, std::string& error) {
     release_pointer(pending_);
     if (zoom_) end_zoom(pending_, false);
     if (resizing_) end_resize();
+    if (dragging_) end_drag();  // the point grabbed has moved
     shown_w_ = frame.width;
     shown_h_ = frame.height;
     chrome_ = chrome::layout(shown_w_, shown_h_);
@@ -386,7 +387,7 @@ void VrPanel::reupload() {
 
 // While a control is in use or a finger is down, the other controls don't highlight.
 void VrPanel::update_hover() {
-  const bool grabbing = grab_device_ != vr::k_unTrackedDeviceIndexInvalid;
+  const bool grabbing = carrying();
   const bool busy = grabbing || resizing_ || pointer_down_ || turning_;
   const chrome::Zone z = has_mouse_ ? chrome::zone(chrome_, mouse_x_, mouse_y_, menu_open_) : chrome::Zone::Empty;
   const bool free = !busy && pressed_ == chrome::Zone::Empty;
@@ -422,7 +423,7 @@ void VrPanel::set_hidden(bool hidden) {
     if (countdown_) countdown_->cancel();  // a pending recenter would show it again
     release_pointer(pending_);  // never leave a finger down on the phone
     if (zoom_) end_zoom(pending_, false);
-    if (grab_device_ != vr::k_unTrackedDeviceIndexInvalid) end_grab();
+    if (carrying()) end_grab();
     if (resizing_) end_resize();
     pressed_ = chrome::Zone::Empty;
     has_mouse_ = false;
@@ -507,7 +508,7 @@ void VrPanel::recenter() {
 void VrPanel::recenter_now() {
   if (!overlay_) return;
   if (countdown_) countdown_->cancel();
-  if (grab_device_ != vr::k_unTrackedDeviceIndexInvalid) end_grab();
+  if (carrying()) end_grab();
   if (resizing_) end_resize();
   menu_open_ = false;
   update_hover();
@@ -534,6 +535,8 @@ void VrPanel::reveal() {
 // edge on it), facing the user, every time it starts. Pressed again it brings back the size from
 // before, in front of the user at once.
 void VrPanel::toggle_theater() {
+  // A carry would put back the pose and size from before (Home's Theater button meanwhile).
+  if (carrying()) end_grab();
   if (theater_) {
     theater_ = false;
     theater_changed_ = true;
@@ -619,16 +622,21 @@ vr::TrackedDeviceIndex_t VrPanel::resolve_pointer_device(vr::TrackedDeviceIndex_
 }
 
 // A tracked-device-relative transform lets SteamVR move the panel with the controller, with no
-// per-frame updates from us.
+// per-frame updates from us. Without the controller's pose the panel follows the laser instead.
 void VrPanel::begin_grab(vr::TrackedDeviceIndex_t device) {
+  if (!placed_) return;
   device = resolve_pointer_device(device);
   panel::Mat34 controller;
-  if (!placed_ || !device_pose(device, controller)) return;
+  if (!device_pose(device, controller)) {
+    begin_drag();
+    return;
+  }
   grab_relative_ = panel::multiply(panel::inverse_rigid(controller), panel_pose_);
   const vr::HmdMatrix34_t rel = to_vr(grab_relative_);
   const vr::EVROverlayError e = overlay_->SetOverlayTransformTrackedDeviceRelative(panel_, device, &rel);
   if (e != vr::VROverlayError_None) {
     log_warn("panel", std::string("grab failed: ") + overlay_error_name(overlay_, e));
+    begin_drag();
     return;
   }
   if (countdown_) countdown_->cancel();  // the user is placing it
@@ -645,15 +653,19 @@ void VrPanel::set_carrying(bool carrying) {
 }
 
 void VrPanel::finish_action() {
-  if (grab_device_ != vr::k_unTrackedDeviceIndexInvalid) {
+  if (carrying()) {
     end_grab();
   } else if (resizing_) {
     end_resize();
   }
 }
 
-// Back to an absolute transform where the controller left the panel.
+// Back to an absolute transform where the controller left the panel. Ends a drag too.
 void VrPanel::end_grab() {
+  if (dragging_) {
+    end_drag();
+    return;
+  }
   if (grab_device_ == vr::k_unTrackedDeviceIndexInvalid) return;
   const bool laser_was_off = laser_free_;
   end_laser_free();
@@ -694,6 +706,71 @@ void VrPanel::update_grab(float push_m, float seconds) {
   overlay_->SetOverlayTransformTrackedDeviceRelative(panel_, grab_device_, &rel);
 }
 
+// While SteamVR's keyboard is open, apps get no controller poses (its Keyboard Privacy setting,
+// on by default), so the panel can't ride on the controller. The laser still reaches it, so the
+// point grabbed follows the laser across the panel's plane instead (update_drag). The laser stays
+// on: SteamVR Input's poses are gone too (begin_laser_free).
+void VrPanel::begin_drag() {
+  laser_point(drag_x_, drag_y_);
+  dragging_ = true;
+  drag_moved_ = false;
+  drag_distance_ = 0.0f;  // the first tick with the head's pose measures it
+  drag_events_ = 0;
+  if (countdown_) countdown_->cancel();  // the user is placing it
+  glide_.reset();
+  grab_started_ = Clock::now();
+  set_carrying(true);
+  log_info("panel", "no controller pose (SteamVR keyboard open?): the panel follows the laser");
+}
+
+void VrPanel::end_drag() {
+  if (!dragging_) return;
+  dragging_ = false;
+  drag_moved_ = false;
+  moved_ = true;
+  set_carrying(false);
+  char buf[200];
+  std::snprintf(buf, sizeof buf, "dragged %.1f s by the laser (%u moves); depth %+.3f m (%u scroll events)",
+                std::chrono::duration<double>(Clock::now() - grab_started_).count(), drag_events_,
+                static_cast<double>(glide_.travelled_m), glide_.events);
+  log_info("panel", buf);
+  glide_.reset();
+  update_hover();
+}
+
+// Every tick while dragging, `seconds` since the last: slides the panel toward putting the point
+// grabbed back under the laser (kDragFollowShare), keeping it as far from the head as when it was
+// grabbed, which the stick changes by `push_m` (positive = farther), then turns it to face the
+// head as carrying does (aimed). SteamVR reports where the laser meets the panel as it is now, so
+// only the tick's latest laser move is applied.
+void VrPanel::update_drag(float push_m, float seconds) {
+  panel::Vec3 at = panel::translation(panel_pose_);
+  if (drag_moved_) {
+    drag_moved_ = false;
+    float x = 0.0f, y = 0.0f;
+    laser_point(x, y);
+    at = panel::dragged_to(panel_pose_, drag_x_, drag_y_, x, y, panel::kDragFollowShare);
+  }
+  panel::Mat34 head;
+  if (!device_pose(vr::k_unTrackedDeviceIndex_Hmd, head)) {
+    panel::Mat34 now = panel_pose_;  // only in its plane, facing as it was
+    now.m[0][3] = at.x;
+    now.m[1][3] = at.y;
+    now.m[2][3] = at.z;
+    set_pose(now);
+    return;
+  }
+  const panel::Vec3 eye = panel::translation(head);
+  if (!(drag_distance_ > 0.0f)) drag_distance_ = panel::distance(panel::translation(panel_pose_), eye);
+  if (push_m != 0.0f) {
+    drag_distance_ = std::clamp(drag_distance_ + push_m, panel::kMinDistanceMeters,
+                                theater_ ? panel::kMaxTheaterDistanceMeters : panel::kMaxDistanceMeters);
+  }
+  aim_eye_ = eye;
+  aim_right_ = {head.m[0][0], head.m[1][0], head.m[2][0]};
+  set_pose(aimed(panel::at_distance(at, eye, drag_distance_), seconds));
+}
+
 // The panel at `at` facing aim_eye_, as far through turning between upright and square as tilt_
 // is `seconds` on: crossing kUprightWithinRadians starts it turning (panel::TiltAnimation).
 panel::Mat34 VrPanel::aimed(const panel::Vec3& at, float seconds) {
@@ -708,7 +785,7 @@ panel::Mat34 VrPanel::aimed(const panel::Vec3& at, float seconds) {
 void VrPanel::begin_resize(vr::TrackedDeviceIndex_t device) {
   if (!placed_ || shown_w_ == 0) return;
   resize_long0_ = long_side_m_;
-  resize_pointer(resize_grab_x_, resize_grab_y_);
+  laser_point(resize_grab_x_, resize_grab_y_);
   resize_anchor_ = panel::translation(panel_pose_);
   resizing_ = true;
   aim_started_ = false;
@@ -718,7 +795,7 @@ void VrPanel::begin_resize(vr::TrackedDeviceIndex_t device) {
 }
 
 // The laser's point in metres from the centre, x right, y down. Mouse Y is bottom-up.
-void VrPanel::resize_pointer(float& x, float& y) const {
+void VrPanel::laser_point(float& x, float& y) const {
   const float mpp = meters_per_pixel();
   x = (mouse_x_ - 0.5f * static_cast<float>(chrome_.width())) * mpp;
   y = (0.5f * static_cast<float>(chrome_.height()) - mouse_y_) * mpp;
@@ -726,7 +803,7 @@ void VrPanel::resize_pointer(float& x, float& y) const {
 
 void VrPanel::update_resize() {
   float x = 0.0f, y = 0.0f;
-  resize_pointer(x, y);
+  laser_point(x, y);
   update_resize_to(x, y);
 }
 
@@ -765,9 +842,13 @@ void VrPanel::end_resize() {
 // OpenVR can hide the laser dot on an overlay but not the beam. Outside the dashboard the laser
 // exists only because of MakeOverlaysInteractiveIfVisible, so clearing that flag while carrying
 // or resizing removes it. Trigger, stick and aim then come from SteamVR Input. If that never
-// reports the trigger, the flag is restored and overlay events take over again.
+// reports the trigger, the flag is restored and overlay events take over again. Not while the
+// controller has no pose (SteamVR's keyboard is open, see begin_drag): there's no aim to resize
+// by, and a miss there would keep the laser on for the rest of the session.
 void VrPanel::begin_laser_free(vr::TrackedDeviceIndex_t device) {
   if (!input_ready_ || !kMakeInteractiveIfVisible || overlay_->IsDashboardVisible()) return;
+  panel::Mat34 pose;
+  if (!device_pose(device, pose)) return;
   const vr::ETrackedControllerRole role = vr::VRSystem()->GetControllerRoleForTrackedDeviceIndex(device);
   if (role != vr::TrackedControllerRole_LeftHand && role != vr::TrackedControllerRole_RightHand) return;
   laser_free_hand_ = hands_[role == vr::TrackedControllerRole_LeftHand ? 0 : 1];
@@ -849,7 +930,7 @@ float VrPanel::poll_laser_free(float seconds) {
 }
 
 void VrPanel::begin_zoom() {
-  const bool grabbing = grab_device_ != vr::k_unTrackedDeviceIndexInvalid;
+  const bool grabbing = carrying();
   if (!has_frame_ || hidden_ || !has_mouse_ || grabbing || resizing_ || pointer_down_ ||
       pressed_ != chrome::Zone::Empty || chrome::zone(chrome_, mouse_x_, mouse_y_, menu_open_) != chrome::Zone::Phone) {
     return;
@@ -1022,7 +1103,7 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
   if (shown_w_ == 0 || shown_h_ == 0) return;
   // Switching the laser off can still produce mouse and focus events. Ignore them.
   if (laser_free_ && ev.eventType != vr::VREvent_OverlayHidden) return;
-  const bool grabbing = grab_device_ != vr::k_unTrackedDeviceIndexInvalid;
+  const bool grabbing = carrying();
   PanelAction a;
   switch (ev.eventType) {
     case vr::VREvent_MouseMove:
@@ -1037,6 +1118,9 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
         out.push_back(a);
       } else if (resizing_) {
         update_resize();
+      } else if (dragging_) {
+        drag_moved_ = true;  // the tick moves the panel (update_drag)
+        ++drag_events_;
       }
       update_hover();
       break;
@@ -1097,6 +1181,10 @@ void VrPanel::handle_event(const vr::VREvent_t& ev, std::vector<PanelAction>& ou
         mouse_x_ = ev.data.mouse.x;
         mouse_y_ = ev.data.mouse.y;
         if (grabbing) {
+          if (dragging_) {  // the release point, and any move earlier this tick
+            drag_moved_ = true;
+            update_drag(0.0f, 0.0f);
+          }
           end_grab();
         } else if (turning_) {
           end_turn(out);
@@ -1198,11 +1286,13 @@ bool VrPanel::poll(std::vector<PanelAction>& out) {
   float push = 0.0f;
   if (laser_free_) {
     push = poll_laser_free(seconds);
-  } else if (grab_device_ != vr::k_unTrackedDeviceIndexInvalid) {
+  } else if (carrying()) {
     push = glide_.take(seconds);
   }
   if (grab_device_ != vr::k_unTrackedDeviceIndexInvalid) {
     update_grab(push, seconds);
+  } else if (dragging_) {
+    update_drag(push, seconds);
   } else if (tilt_.busy()) {
     // A turn between upright and square goes on after the panel is let go, facing the head as it
     // was then, since the panel stays put otherwise.

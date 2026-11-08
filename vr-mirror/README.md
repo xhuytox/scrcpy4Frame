@@ -51,6 +51,10 @@ JSON-lines protocol on stdin/stdout, the wire format and the panel behaviour are
     and pointing pose come from SteamVR Input (`manifest/vr-mirror-actions.json`, bindings for
     the Frame controller). Without them it falls back to the laser and smooth scroll
     (`panel::DepthGlide`).
+  - While SteamVR's keyboard is open, apps get no controller poses (Keyboard Privacy), so the
+    bar drags the panel by the laser across its own plane instead (`VrPanel::begin_drag`,
+    `panel::dragged_to`), with the laser on, keeping its distance from the head
+    (`panel::at_distance`) unless the stick changes it.
   - Dragging the bracket resizes the panel around its centre, which stays where it was when the
     bracket was grabbed (in theater too), like a Steam Frame window. On release it turns to face
     the user again, so it tilts if its new size needs it to.

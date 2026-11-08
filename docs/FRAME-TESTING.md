@@ -111,6 +111,11 @@ Mirror in VR and check:
   overhead it faces straight down at you. Wave it back and forth across 25°: each turn
   finishes before the next starts, and it ends upright or square to match where you left it,
   even if you let go mid-turn.
+- **Carrying with SteamVR's keyboard open:** open the VR keyboard (it follows the laser onto the
+  overlay), then grab the bar. The laser stays on and the overlay slides with it, the bar
+  staying under the laser, still facing you; the stick pushes it away or pulls it closer. Sweep
+  it up over your head and down again a few times: it stays the same distance away. Let
+  go, close the keyboard, and carry it again: the laser goes off again while carrying.
 - **Resizing:** drag the bracket at the bottom right. The overlay grows and shrinks around its
   centre, evenly on every side, like a Steam Frame window, and the bracket stays under the
   laser. Drag it to the centre: it shrinks to its smallest. When you let go it turns to face
